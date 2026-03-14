@@ -20,7 +20,7 @@ Features
 - Endpoints: /ping, /health, /tool-call, /mcp.
 
 
-**Quickstart**
+**Starting**
 
 ```
 load("mcp_server.lisp");
@@ -29,7 +29,7 @@ load("mcp_server.lisp");
 
 ```
 
-**Example**
+**Examples**
 ```
 curl.exe -X POST http://127.0.0.1:8000/tool-call -H "Content-Type: application/json" -d '{ "expression": "erf(0.5);" }' --max-time 5
 {"success":true,"result":"displayinput(false,0.5204998778130465)
@@ -51,6 +51,6 @@ curl.exe -X POST http://127.0.0.1:8000/tool-call -H "Content-Type: application/j
 :lisp (maxima-mcp:stop-server)
 ```
 
-**Example use**
+**Example uses**
 - Local LLM tool-calling (Ollama/LM Studio → Maxima)
 - Research workflows (Python → symbolic math API)
