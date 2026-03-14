@@ -38,6 +38,12 @@ curl.exe -X POST http://127.0.0.1:8000/tool-call -H "Content-Type: application/j
 curl.exe -X POST http://127.0.0.1:8000/tool-call -H "Content-Type: application/json" -d '{ "expression": "solve(x^2-2,x);" }' --max-time 5
 {"success":true,"result":"displayinput(false,[x = -sqrt(2),x = sqrt(2)])
 "}
+
+curl.exe -X POST http://127.0.0.1:8000/tool-call -H "Content-Type: application/json" -d '{\"expression\":\"integrate(erf(-x^2/2),x);\"}' --max-time 5
+{"success":true,"result":"displayinput(false,
+             -(x*erf(x^2/2))-(sqrt(2)*gamma_incomplete(3/4,x^4/4)*x)
+                             /(sqrt(%pi)*abs(x)))
+"}
 ```
 
 **Stopping**
