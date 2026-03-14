@@ -40,6 +40,11 @@ curl.exe -X POST http://127.0.0.1:8000/tool-call -H "Content-Type: application/j
 "}
 ```
 
+**Stopping**
+```
+:lisp (maxima-mcp:stop-server)
+```
+
 **Example use**
 - Local LLM tool-calling (Ollama/LM Studio → Maxima)
 - Research workflows (Python → symbolic math API)
