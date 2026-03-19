@@ -20,12 +20,22 @@ Features
 - Endpoints: /ping, /health, /tool-call, /mcp.
 
 
-**Starting**
+**Starting w/o no wraper**
 
 ```
 load("mcp_server.lisp");
 
 :lisp (maxima-mcp:start-server 8000)
+
+```
+
+**Starting with wrapper**
+
+```
+load("mcp_server.lisp");
+load("mcp_wrapper.lisp");
+
+mcp_start_server (8000);
 
 ```
 
