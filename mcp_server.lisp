@@ -1,7 +1,9 @@
-;;; maxima-mcp-server.lisp - PURE SB-BSD-SOCKETS VERSION
-;;; No usocket, no Quicklisp. Works in vanilla Maxima SBCL.
+;; maxima-mcp-server.lisp
+;; 
+;; Works in vanilla Maxima SBCL.
 
-
+;; (C) 2026 Dimiter Prodanov, IICT
+;; help from Deepseek and Calude 
 
 (in-package :cl-user)
 (require :sb-bsd-sockets)
@@ -130,18 +132,18 @@
             (json-object "success" nil "error" "No expression"))))))
 
 
-(defun handle-mcp (body)
-  (when *debug* (format t "~&[DEBUG] /mcp body: ~a~%" body))
-  (let ((method (extract-json-field body "method")))
-    (cond ((string= method "ping")
-           (when *debug* (format t "~&[DEBUG] Ping~%"))
-           (json-object "pong" t))
-          ((string= method "call_tool")
-           (when *debug* (format t "~&[DEBUG] Call tool~%"))
-           (handle-tool-call body))
-          (t
-           (when *debug* (format t "~&[DEBUG] Unknown method: ~a~%" method))
-           (json-object "error" "Unknown method")))))
+; (defun handle-mcp (body)
+  ; (when *debug* (format t "~&[DEBUG] /mcp body: ~a~%" body))
+  ; (let ((method (extract-json-field body "method")))
+    ; (cond ((string= method "ping")
+           ; (when *debug* (format t "~&[DEBUG] Ping~%"))
+           ; (json-object "pong" t))
+          ; ((string= method "call_tool")
+           ; (when *debug* (format t "~&[DEBUG] Call tool~%"))
+           ; (handle-tool-call body))
+          ; (t
+           ; (when *debug* (format t "~&[DEBUG] Unknown method: ~a~%" method))
+           ; (json-object "error" "Unknown method")))))
 
 ;;; Request parsing
 (defun parse-request-line (line)
@@ -176,46 +178,29 @@
                                    (push (cons header-name header-value) headers)
                                    (when *debug* (format t "~&[DEBUG] Header: ~a = ~a~%" header-name header-value))))))
                                                    
-                ; Get Content-Length
-                ; (setf content-length
-                      ; (let ((header (assoc "CONTENT-LENGTH" headers :test #'string=)))
-                        ; (if header
-                          ; (or (parse-integer (cdr header) :junk-allowed t) 0)
-                          ; 0)))
-                ; (when *debug* (format t "~&[DEBUG] Content-Length: ~d~%" content-length))
-                ; Read body if needed
-                ; (setf body (when (plusp content-length)
-                             ; (let ((b (make-string content-length)))
-                               ; (read-sequence b stream)
-                               ; b)))
-                ; (when *debug*
-                  ; (format t "~&[DEBUG] Body: ~d bytes: ~a~%"
-                          ; (if body (length body) 0) body))
-      ;; Get Content-Length
-(let ((raw-len (let ((header (assoc "CONTENT-LENGTH" headers :test #'string=)))
-                 (if header
-                     (or (parse-integer (cdr header) :junk-allowed t) 0)
-                     0))))
-  (setf content-length (min raw-len 100000))
-  (when (> raw-len 100000)
-    (when *debug* (format t "~&[DEBUG] Body too large: ~d > 100000, capping~%" raw-len))
-    ;; Drain excess bytes to unblock client
-    (dotimes (_ (- raw-len 100000))
-      (read-char stream nil nil)))
-  (when *debug* (format t "~&[DEBUG] Effective Content-Length: ~d~%" content-length)))
+                ;; Get Content-Length
+                (let ((raw-len (let ((header (assoc "CONTENT-LENGTH" headers :test #'string=)))
+                                 (if header
+                                     (or (parse-integer (cdr header) :junk-allowed t) 0)
+                                     0))))
+                  (setf content-length (min raw-len 100000))
+                  (when (> raw-len 100000)
+                    (when *debug* (format t "~&[DEBUG] Body too large: ~d > 100000, capping~%" raw-len))
+                    ;; Drain excess bytes to unblock client
+                    (dotimes (_ (- raw-len 100000))
+                      (read-char stream nil nil)))
+                  (when *debug* (format t "~&[DEBUG] Effective Content-Length: ~d~%" content-length)))
 
-;; Read body if needed
-(setf body (when (plusp content-length)
-             (let ((b (make-string content-length)))
-               (let ((read-bytes (read-sequence b stream)))
-                 (when (< read-bytes content-length)
-                   (when *debug* (format t "~&[DEBUG] Partial read: ~d/~d~%" read-bytes content-length)))
-                 b))))
-(when *debug*
-  (format t "~&[DEBUG] Body: ~d bytes~%" (if body (length body) 0)))
+                ;; Read body if needed
+                (setf body (when (plusp content-length)
+                             (let ((b (make-string content-length)))
+                               (let ((read-bytes (read-sequence b stream)))
+                                 (when (< read-bytes content-length)
+                                   (when *debug* (format t "~&[DEBUG] Partial read: ~d/~d~%" read-bytes content-length)))
+                                 b))))
+                (when *debug*
+                  (format t "~&[DEBUG] Body: ~d bytes~%" (if body (length body) 0)))
 
-              
- 
                 ;; Dispatch
                 (let ((response
                        (cond ((and method (string= method "GET")  (string= path "/"))          (handle-root))
