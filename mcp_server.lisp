@@ -116,7 +116,7 @@
 
 (defun handle-root ()
   (when *debug* (format t "~&[DEBUG] /~%"))
-  (json-object "message" "Maxima MCP Server" "endpoints" (list "/health" "/tool-call" "/mcp")))
+  (json-object "message" "Maxima MCP Server" "endpoints" (list "/health" "/tool-call" "/load" "/mcp")))
 
 
 (defun handle-tool-call (body)
@@ -131,19 +131,30 @@
             (when *debug* (format t "~&[DEBUG] Empty expr from raw: ~s~%" raw))
             (json-object "success" nil "error" "No expression"))))))
 
+;;; Package loader
+(defun handle-load (body)
+  (when *debug* (format t "~&[DEBUG] /load body: ~a~%" body))
+  (let* ((key "package:")
+         (kstart (search key body))
+         (after (when kstart (+ kstart (length key))))
+         (end (when after (position #\} body :start after)))
+         (pkg (when end (string-trim " \"" (subseq body after end)))))
+    (if (and pkg (plusp (length pkg)))
+        (handler-case
+            (progn
+              (when *debug* (format t "~&[DEBUG] Loading package: ~a~%" pkg))
+              (run-maxima (format nil "load(\"~a\")" pkg))
+              (json-object "success" t "result"
+                           (format nil "Package ~a loaded." pkg)))
+          (error (e)
+            (when *debug* (format t "~&[DEBUG] Load error: ~a~%" e))
+            (json-object "success" nil "error"
+                         (format nil "Load error: ~a" e))))
+        (json-object "success" nil "error" "No package specified"))))
 
-; (defun handle-mcp (body)
-  ; (when *debug* (format t "~&[DEBUG] /mcp body: ~a~%" body))
-  ; (let ((method (extract-json-field body "method")))
-    ; (cond ((string= method "ping")
-           ; (when *debug* (format t "~&[DEBUG] Ping~%"))
-           ; (json-object "pong" t))
-          ; ((string= method "call_tool")
-           ; (when *debug* (format t "~&[DEBUG] Call tool~%"))
-           ; (handle-tool-call body))
-          ; (t
-           ; (when *debug* (format t "~&[DEBUG] Unknown method: ~a~%" method))
-           ; (json-object "error" "Unknown method")))))
+
+
+
 
 ;;; Request parsing
 (defun parse-request-line (line)
@@ -207,6 +218,8 @@
                              ((and method (string= method "GET")  (string= path "/health"))    (handle-health))
                              ((and method (string= method "POST") (string= path "/tool-call")) (handle-tool-call body))
                              ((and method (string= method "POST") (string= path "/mcp"))       (handle-mcp body))
+                             ((and method (string= method "POST") (string= path "/load"))      (handle-load body))
+
                              (t (json-object "error" "Not found")))))
                   (when *debug* (format t "~&[DEBUG] Response: ~a~%" response))
                   (format stream "~a" (http-response response))
@@ -222,12 +235,17 @@
 (defun handle-mcp (body)
   (when *debug* (format t "~&[DEBUG] /mcp body: ~a~%" body))
   (let ((method (extract-json-field body "method")))  ; Same function!
-    (cond ((string= method "ping")
-           (when *debug* (format t "~&[DEBUG] Ping~%"))
-           (json-object "pong" t))
-          ((string= method "call_tool")
-           (when *debug* (format t "~&[DEBUG] Call tool~%"))
-           (handle-tool-call body))
+    (cond 
+        ((search "ping" method)
+         (when *debug* (format t "~&[DEBUG] Ping~%"))
+         (json-object "pong" t))
+        ((search "call_tool" method)
+         (when *debug* (format t "~&[DEBUG] Call tool~%"))
+         (handle-tool-call body))
+        ((search "load" method)
+         (when *debug* (format t "~&[DEBUG] Load package~%"))
+         (handle-load body))
+
           (t
            (when *debug* (format t "~&[DEBUG] Unknown method: ~a~%" method))
            (json-object "error" "Unknown method")))))

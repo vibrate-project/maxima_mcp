@@ -38,6 +38,7 @@ mcp_start_server (8000);
 **Turning on/off debug output**
 ```
 mcp_debug_on();
+mcp_debug_off();
 ```
 
 **Server status**
@@ -61,6 +62,18 @@ curl.exe -X POST http://127.0.0.1:8000/tool-call -H "Content-Type: application/j
              -(x*erf(x^2/2))-(sqrt(2)*gamma_incomplete(3/4,x^4/4)*x)
                              /(sqrt(%pi)*abs(x)))
 "}
+
+ curl.exe -X POST http://127.0.0.1:8000/mcp -H "Content-Type: application/json" -d '{"method":"load","package":"clifford.mac"}' --max-time 5
+{"success":true,"result":"Package clifford.mac loaded."}
+
+ curl.exe -X POST http://127.0.0.1:8000/tool-call -H "Content-Type: application/json" -d '{ "expression": "clifford(e,3);" }' --max-time 5
+{"success":true,"result":"displayinput(false,[1,1,1])
+"}
+
+curl.exe -X POST http://127.0.0.1:8000/tool-call -H "Content-Type: application/json" -d '{ "expression": "e[2].e[1];" }' --max-time 5
+{"success":true,"result":"displayinput(false,-(e[1] . e[2]))
+"}
+
 ```
 
 **Stopping**
