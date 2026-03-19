@@ -21,7 +21,6 @@ Features
 
 
 **Starting w/o no wraper**
-
 ```
 load("mcp_server.lisp");
 
@@ -30,16 +29,24 @@ load("mcp_server.lisp");
 ```
 
 **Starting with wrapper**
-
 ```
 load("mcp_server.lisp");
 load("mcp_wrapper.lisp");
-
 mcp_start_server (8000);
+```
 
+**Turning on/off debug output**
+```
+mcp_debug_on();
+```
+
+**Server status**
+```
+mcp_status();
 ```
 
 **Examples**
+Start a command shell. Next example is in PowerShell:
 ```
 curl.exe -X POST http://127.0.0.1:8000/tool-call -H "Content-Type: application/json" -d '{ "expression": "erf(0.5);" }' --max-time 5
 {"success":true,"result":"displayinput(false,0.5204998778130465)
@@ -60,6 +67,11 @@ curl.exe -X POST http://127.0.0.1:8000/tool-call -H "Content-Type: application/j
 ```
 :lisp (maxima-mcp:stop-server)
 ```
+or
+```
+mcp_stop_server();
+```
+
 
 **Example uses**
 - Local LLM tool-calling (Ollama/LM Studio → Maxima)
