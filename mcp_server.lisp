@@ -64,9 +64,35 @@
 (defun last-char (string)
   (char string (1- (length string))))
 
+; (defun run-maxima (expr)
+  ; (when *debug* (format t "~&[DEBUG] Maxima expr: ~a~%" expr))
+  ; Add ; if missing
+  ; (let ((fixed-expr (if (and (plusp (length expr))
+                             ; (not (member (last-char expr) '(#\;))))
+                        ; (concatenate 'string expr ";")
+                        ; expr)))
+    ; (when *debug* (format t "~&[DEBUG] Fixed expr: ~a~%" fixed-expr))
+    ; (handler-case
+        ; (with-input-from-string (in (format nil "~a$" fixed-expr))
+          ; (with-output-to-string (out)
+            ; (let ((*standard-output* out)
+                  ; (maxima::$display2d nil))
+              ; (maxima::displa (maxima::meval (maxima::mread in))))))
+      ; (error (e)
+        ; (when *debug* (format t "~&[DEBUG] Maxima error: ~a~%" e))
+        ; (format nil "Maxima error: ~a" e)))))
+
+(defun clean-maxima-result (s)
+  (let ((s (string-trim '(#\Space #\Newline #\Return #\Tab) s)))
+    (if (and (> (length s) 13)
+             (string= (subseq s 0 13) "displayinput("))
+        (let* ((comma-pos (position #\, s))
+               (inner (subseq s (1+ comma-pos) (1- (length s)))))
+          (string-trim '(#\Space #\Newline #\Return #\Tab) inner))
+        s)))
+
 (defun run-maxima (expr)
   (when *debug* (format t "~&[DEBUG] Maxima expr: ~a~%" expr))
-  ;; Add ; if missing
   (let ((fixed-expr (if (and (plusp (length expr))
                              (not (member (last-char expr) '(#\;))))
                         (concatenate 'string expr ";")
@@ -74,14 +100,17 @@
     (when *debug* (format t "~&[DEBUG] Fixed expr: ~a~%" fixed-expr))
     (handler-case
         (with-input-from-string (in (format nil "~a$" fixed-expr))
-          (with-output-to-string (out)
-            (let ((*standard-output* out)
-                  (maxima::$display2d nil))
-              (maxima::displa (maxima::meval (maxima::mread in))))))
+          (let* ((maxima::$display2d nil)
+                 (evaled (maxima::meval (maxima::mread in)))
+                 (result (with-output-to-string (out)
+                           (maxima::mgrind evaled out))))
+            (string-trim '(#\Space #\Newline #\Return #\Tab) result)))
       (error (e)
         (when *debug* (format t "~&[DEBUG] Maxima error: ~a~%" e))
         (format nil "Maxima error: ~a" e)))))
- 
+
+
+
 
 
 ;;; Simple JSON field extraction (for demo purposes)
@@ -119,17 +148,28 @@
   (json-object "message" "Maxima MCP Server" "endpoints" (list "/health" "/tool-call" "/load" "/mcp")))
 
 
+
+
 (defun handle-tool-call (body)
-  (when *debug* (format t "~&[DEBUG] /tool-call body: ~a~%" body))
-  (let ((raw (extract-json-field body "expression")))
-    (let ((expr (when raw (string-trim " \t\n\r" raw))))
-      (if (and expr (plusp (length expr)))
-          (progn
-            (when *debug* (format t "~&[DEBUG] Clean expr: ~s~%" expr))
-            (json-object "success" t "result" (run-maxima expr)))
-          (progn
-            (when *debug* (format t "~&[DEBUG] Empty expr from raw: ~s~%" raw))
-            (json-object "success" nil "error" "No expression"))))))
+  (when *debug* (format t "~&[DEBUG] handle-tool-call: ~a~%" body))
+  (let* ((tool-name (extract-json-field body "name"))
+         (expr (extract-json-field body "expression"))
+         (id (extract-json-id body)))
+    (when *debug* (format t "~&[DEBUG] tool: ~a expr: ~a id: ~a~%" tool-name expr id))
+    (if (and expr (plusp (length (string-trim " " expr))))
+        (let* ((clean-expr (string-trim " " expr))
+               (raw (run-maxima clean-expr))
+               (result (clean-maxima-result raw))
+               (escaped (json-escape result)))
+          (when *debug* (format t "~&[DEBUG] tool result: ~a~%" result))
+          (format nil "{\"jsonrpc\":\"2.0\",\"id\":~a,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"~a\"}]}}"
+                  (or id "null") escaped))
+
+        (progn
+          (when *debug* (format t "~&[DEBUG] tool error: no expression~%"))
+          (format nil "{\"jsonrpc\":\"2.0\",\"id\":~a,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"Error: no expression\"}]}}"
+                  (or id "null"))))))
+
 
 ;;; Package loader
 (defun handle-load (body)
@@ -166,30 +206,97 @@
               (subseq line (1+ space1) space2)))))
 
 ;;; Client handling
+; (defun handle-client (client-socket)
+  ; (when *debug* (format t "~&[DEBUG] New client~%"))
+  ; (let ((stream (socket-make-stream client-socket :input t :output t :element-type 'character  :external-format :latin-1   
+                ; :buffering :full )))
+    ; (unwind-protect
+      ; (handler-case
+        ; (let ((request-line (read-line stream nil nil)))
+          ; (when request-line
+            ; (multiple-value-bind (method path) (parse-request-line request-line)
+              ; (when *debug* (format t "~&[DEBUG] Method: ~a Path: ~a~%" method path))
+              ; (let ((headers '()) content-length body)
+                ; Read headers
+                ; (when *debug* (format t "~&[DEBUG] Reading headers~%"))
+                    ; (loop for line = (read-line stream nil nil)
+                          ; do (when *debug* (format t "~&[DEBUG] Header line: ~s~%" line))
+                          ; while (and line (plusp (length (string-trim '(#\Space #\Tab #\Return #\Newline) line))))
+                          ; do (let* ((colon (position #\: line)))
+                               ; (when colon
+                                 ; (let* ((header-name (string-upcase (subseq line 0 colon)))
+                                        ; (header-value (string-trim " " (subseq line (1+ colon)))))
+                                   ; (push (cons header-name header-value) headers)
+                                   ; (when *debug* (format t "~&[DEBUG] Header: ~a = ~a~%" header-name header-value))))))
+                                                   
+                ; Get Content-Length
+                ; (let ((raw-len (let ((header (assoc "CONTENT-LENGTH" headers :test #'string=)))
+                                 ; (if header
+                                     ; (or (parse-integer (cdr header) :junk-allowed t) 0)
+                                     ; 0))))
+                  ; (setf content-length (min raw-len 100000))
+                  ; (when (> raw-len 100000)
+                    ; (when *debug* (format t "~&[DEBUG] Body too large: ~d > 100000, capping~%" raw-len))
+                    ; Drain excess bytes to unblock client
+                    ; (dotimes (_ (- raw-len 100000))
+                      ; (read-char stream nil nil)))
+                  ; (when *debug* (format t "~&[DEBUG] Effective Content-Length: ~d~%" content-length)))
+
+                ; Read body if needed
+                ; (setf body (when (plusp content-length)
+                             ; (let ((b (make-string content-length)))
+                               ; (let ((read-bytes (read-sequence b stream)))
+                                 ; (when (< read-bytes content-length)
+                                   ; (when *debug* (format t "~&[DEBUG] Partial read: ~d/~d~%" read-bytes content-length)))
+                                 ; b))))
+                ; (when *debug*
+                  ; (format t "~&[DEBUG] Body: ~d bytes~%" (if body (length body) 0)))
+
+                ; Dispatch
+                ; (let ((response
+                       ; (cond ((and method (string= method "GET")  (string= path "/"))          (handle-root))
+                             ; ((and method (string= method "GET")  (string= path "/health"))    (handle-health))
+                             ; ((and method (string= method "POST") (string= path "/tool-call")) (handle-tool-call body))
+                            ; ((and method (string= method "POST") (string= path "/mcp"))       (handle-mcp body))
+                             ; ((and method (string= method "POST") (string= (string-trim " " path) "/mcp"))       (handle-mcp-sse stream body) nil)
+
+                             ; ((and method (string= method "POST") (string= path "/load"))      (handle-load body))
+
+                             ; (t (json-object "error" "Not found")))))
+                  ; (when response
+                  ; (when *debug* (format t "~&[DEBUG] Response: ~a~%" response))
+                  ; (format stream "~a" (http-response response))
+                  ; (finish-output stream) 
+                  ; (force-output stream)))))))
+        ; (error (e)
+          ; (when *debug* (format t "~&[DEBUG] Client error: ~a~%" e))
+          ; (format t "Client error: ~a~%" e)))
+      ; (when stream (close stream))))
+  ; (when *debug* (format t "~&[DEBUG] Client closed~%"))
+  ; (socket-close client-socket))
+
 (defun handle-client (client-socket)
   (when *debug* (format t "~&[DEBUG] New client~%"))
-  (let ((stream (socket-make-stream client-socket :input t :output t :element-type 'character  :external-format :latin-1   
-                :buffering :full )))
+  (let ((stream (socket-make-stream client-socket :input t :output t :element-type 'character :external-format :latin-1
+                :buffering :full)))
     (unwind-protect
       (handler-case
-        (let ((request-line (read-line stream nil nil)))
-          (when request-line
+        (loop
+          (let ((request-line (read-line stream nil nil)))
+            (unless request-line (return))
             (multiple-value-bind (method path) (parse-request-line request-line)
               (when *debug* (format t "~&[DEBUG] Method: ~a Path: ~a~%" method path))
               (let ((headers '()) content-length body)
-                ;; Read headers
                 (when *debug* (format t "~&[DEBUG] Reading headers~%"))
-                    (loop for line = (read-line stream nil nil)
-                          do (when *debug* (format t "~&[DEBUG] Header line: ~s~%" line))
-                          while (and line (plusp (length (string-trim '(#\Space #\Tab #\Return #\Newline) line))))
-                          do (let* ((colon (position #\: line)))
-                               (when colon
-                                 (let* ((header-name (string-upcase (subseq line 0 colon)))
-                                        (header-value (string-trim " " (subseq line (1+ colon)))))
-                                   (push (cons header-name header-value) headers)
-                                   (when *debug* (format t "~&[DEBUG] Header: ~a = ~a~%" header-name header-value))))))
-                                                   
-                ;; Get Content-Length
+                (loop for line = (read-line stream nil nil)
+                      do (when *debug* (format t "~&[DEBUG] Header line: ~s~%" line))
+                      while (and line (plusp (length (string-trim '(#\Space #\Tab #\Return #\Newline) line))))
+                      do (let* ((colon (position #\: line)))
+                           (when colon
+                             (let* ((header-name (string-upcase (subseq line 0 colon)))
+                                    (header-value (string-trim " " (subseq line (1+ colon)))))
+                               (push (cons header-name header-value) headers)
+                               (when *debug* (format t "~&[DEBUG] Header: ~a = ~a~%" header-name header-value))))))
                 (let ((raw-len (let ((header (assoc "CONTENT-LENGTH" headers :test #'string=)))
                                  (if header
                                      (or (parse-integer (cdr header) :junk-allowed t) 0)
@@ -197,12 +304,9 @@
                   (setf content-length (min raw-len 100000))
                   (when (> raw-len 100000)
                     (when *debug* (format t "~&[DEBUG] Body too large: ~d > 100000, capping~%" raw-len))
-                    ;; Drain excess bytes to unblock client
                     (dotimes (_ (- raw-len 100000))
                       (read-char stream nil nil)))
                   (when *debug* (format t "~&[DEBUG] Effective Content-Length: ~d~%" content-length)))
-
-                ;; Read body if needed
                 (setf body (when (plusp content-length)
                              (let ((b (make-string content-length)))
                                (let ((read-bytes (read-sequence b stream)))
@@ -211,20 +315,23 @@
                                  b))))
                 (when *debug*
                   (format t "~&[DEBUG] Body: ~d bytes~%" (if body (length body) 0)))
-
-                ;; Dispatch
                 (let ((response
                        (cond ((and method (string= method "GET")  (string= path "/"))          (handle-root))
                              ((and method (string= method "GET")  (string= path "/health"))    (handle-health))
                              ((and method (string= method "POST") (string= path "/tool-call")) (handle-tool-call body))
-                             ((and method (string= method "POST") (string= path "/mcp"))       (handle-mcp body))
-                             ((and method (string= method "POST") (string= path "/load"))      (handle-load body))
+                             ((and method (string= method "POST") (string= (string-trim " " path) "/mcp")) (handle-mcp-sse stream body))
 
+                             ((and method (string= method "POST") (string= path "/load"))      (handle-load body))
                              (t (json-object "error" "Not found")))))
-                  (when *debug* (format t "~&[DEBUG] Response: ~a~%" response))
-                  (format stream "~a" (http-response response))
-                  (finish-output stream) 
-                  (force-output stream))))))
+                  (when response
+                    (when *debug* (format t "~&[DEBUG] Response: ~a~%" response))
+                    (format stream "~a" (http-response response))
+                    (finish-output stream)
+                    (force-output stream)))
+                ;; Close connection if client requested it
+                (let ((conn (cdr (assoc "CONNECTION" headers :test #'string=))))
+                  (when (and conn (string-equal (string-trim " " conn) "close"))
+                    (return)))))))
         (error (e)
           (when *debug* (format t "~&[DEBUG] Client error: ~a~%" e))
           (format t "Client error: ~a~%" e)))
@@ -232,23 +339,131 @@
   (when *debug* (format t "~&[DEBUG] Client closed~%"))
   (socket-close client-socket))
 
+
+(defun extract-json-id (body)
+  (let* ((key "\"id\":"))
+    (let ((kstart (search key body)))
+      (when kstart
+        (let* ((after (+ kstart (length key)))
+               (end1 (position #\, body :start after))
+               (end2 (position #\} body :start after))
+               (end (cond ((and end1 end2) (min end1 end2))
+                          (end1 end1)
+                          (end2 end2))))
+          (when end
+            (string-trim " " (subseq body after end))))))))
+
+
+
+; (defun handle-mcp (body)
+  ; (when *debug* (format t "~&[DEBUG] /mcp body: ~a~%" body))
+  ; (let ((method (extract-json-field body "method"))
+        ; (id (extract-json-id body)))
+    ; Notifications must not get a response
+    ; (when (search "notifications/" method)
+      ; (return-from handle-mcp nil))
+    ; (let ((result
+           ; (cond
+             ; ((search "initialize" method)
+              ; "{\"protocolVersion\":\"2025-06-18\",\"serverInfo\":{\"name\":\"maxima-mcp\",\"version\":\"1.0\"},\"capabilities\":{\"tools\":{}}}")
+             ; ((search "tools/list" method)
+              ; "{\"tools\":[{\"name\":\"maxima_compute\",\"description\":\"Evaluate a Maxima CAS expression\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"expression\":{\"type\":\"string\"}},\"required\":[\"expression\"]}},{\"name\":\"maxima_load\",\"description\":\"Load a Maxima package\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"package\":{\"type\":\"string\"}},\"required\":[\"package\"]}}]}")
+             ; ((search "tools/call" method)
+              ; (let ((tool-name (extract-json-field body "name")))
+                ; (cond ((search "compute" tool-name) (handle-tool-call body))
+                      ; ((search "load" tool-name) (handle-load body))
+                      ; (t (json-object "error" "Unknown tool")))))
+             ; ((search "ping" method) "{\"pong\":true}")
+             ; (t (json-object "error" "Unknown method")))))
+      ; (format nil "{\"jsonrpc\":\"2.0\",\"id\":~a,\"result\":~a}"
+              ; (or id "null") result))))
+
 (defun handle-mcp (body)
   (when *debug* (format t "~&[DEBUG] /mcp body: ~a~%" body))
-  (let ((method (extract-json-field body "method")))  ; Same function!
-    (cond 
-        ((search "ping" method)
-         (when *debug* (format t "~&[DEBUG] Ping~%"))
-         (json-object "pong" t))
-        ((search "call_tool" method)
-         (when *debug* (format t "~&[DEBUG] Call tool~%"))
-         (handle-tool-call body))
-        ((search "load" method)
-         (when *debug* (format t "~&[DEBUG] Load package~%"))
-         (handle-load body))
+  (let ((method (extract-json-field body "method"))
+        (id (extract-json-id body)))
+    (cond
+      ((search "notifications/" method)
+       nil)
+      ((search "tools/call" method)
+       (let ((tool-name (extract-json-field body "name")))
+         (cond ((search "compute" tool-name) (handle-tool-call body))
+               ((search "load" tool-name) (handle-load body))
+               (t (format nil "{\"jsonrpc\":\"2.0\",\"id\":~a,\"error\":{\"code\":-32601,\"message\":\"Unknown tool\"}}"
+                          (or id "null"))))))
+      (t
+       (let ((result
+              (cond
+                ((search "initialize" method)
+                 "{\"protocolVersion\":\"2025-06-18\",\"serverInfo\":{\"name\":\"maxima-mcp\",\"version\":\"1.0\"},\"capabilities\":{\"tools\":{}}}")
+                ((search "tools/list" method)
+                 "{\"tools\":[{\"name\":\"maxima_compute\",\"description\":\"Evaluate a Maxima CAS expression\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"expression\":{\"type\":\"string\"}},\"required\":[\"expression\"]}},{\"name\":\"maxima_load\",\"description\":\"Load a Maxima package\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"package\":{\"type\":\"string\"}},\"required\":[\"package\"]}}]}")
+                ((search "ping" method) "{\"pong\":true}")
+                (t (json-object "error" "Unknown method")))))
+         (format nil "{\"jsonrpc\":\"2.0\",\"id\":~a,\"result\":~a}"
+                 (or id "null") result))))))
 
-          (t
-           (when *debug* (format t "~&[DEBUG] Unknown method: ~a~%" method))
-           (json-object "error" "Unknown method")))))
+            
+            
+
+(defun send-json-response (stream json)
+  (format stream "HTTP/1.1 200 OK~c~cContent-Type: text/event-stream~c~cCache-Control: no-cache~c~cConnection: keep-alive~c~c~c~cdata: ~a~c~c~c~c"
+          #\Return #\Linefeed
+          #\Return #\Linefeed
+          #\Return #\Linefeed
+          #\Return #\Linefeed
+          #\Return #\Linefeed
+          json
+          #\Return #\Linefeed
+          #\Return #\Linefeed)
+  (finish-output stream))
+
+
+
+
+; (defun handle-mcp-sse (stream body)
+  ; (when *debug* (format t "~&[DEBUG] handle-mcp-sse called~%"))
+  ; (when (and body (plusp (length body)))
+    ; (when *debug* (format t "~&[DEBUG] SSE calling handle-mcp~%"))
+    ; (let ((result (handle-mcp body)))
+      ; (when *debug* (format t "~&[DEBUG] SSE result: ~a~%" result))
+      ; (cond
+        ; (result
+         ; (send-json-response stream result)
+         ; (when *debug* (format t "~&[DEBUG] JSON response sent~%"))
+         ; (when (search "initialize" body)
+           ; (sleep 1)))
+        ; (t
+         ; (when *debug* (format t "~&[DEBUG] Sending 204~%"))
+; (format stream "HTTP/1.1 200 OK~c~cContent-Type: text/event-stream~c~cCache-Control: no-cache~c~cConnection: keep-alive~c~c~c~c"
+        ; #\Return #\Linefeed
+        ; #\Return #\Linefeed
+        ; #\Return #\Linefeed
+        ; #\Return #\Linefeed
+        ; #\Return #\Linefeed)
+; (finish-output stream)
+
+         ; (finish-output stream))))))
+
+(defun handle-mcp-sse (stream body)
+  (when *debug* (format t "~&[DEBUG] handle-mcp-sse called~%"))
+  (when (and body (plusp (length body)))
+    (when *debug* (format t "~&[DEBUG] SSE calling handle-mcp~%"))
+    (let ((result (handle-mcp body)))
+      (when *debug* (format t "~&[DEBUG] SSE result: ~a~%" result))
+      (cond
+        (result
+         (send-json-response stream result)
+         (when *debug* (format t "~&[DEBUG] JSON response sent~%")))
+        (t
+         (when *debug* (format t "~&[DEBUG] Sending 204~%"))
+         (format stream "HTTP/1.1 200 OK~c~cContent-Type: text/event-stream~c~cCache-Control: no-cache~c~cConnection: keep-alive~c~c~c~c"
+                 #\Return #\Linefeed
+                 #\Return #\Linefeed
+                 #\Return #\Linefeed
+                 #\Return #\Linefeed
+                 #\Return #\Linefeed)
+         (finish-output stream))))))
 
 
 ;;; Server loop
