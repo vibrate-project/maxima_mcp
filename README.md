@@ -38,6 +38,7 @@ mcp_start_server (8000);
 **Turning on/off debug output**
 ```
 mcp_debug_on();
+
 mcp_debug_off();
 ```
 
@@ -49,19 +50,16 @@ mcp_status();
 **Examples**
 Start a command shell. Next example is in PowerShell:
 ```
-curl.exe -X POST http://127.0.0.1:8000/tool-call -H "Content-Type: application/json" -d '{ "expression": "erf(0.5);" }' --max-time 5
-{"success":true,"result":"displayinput(false,0.5204998778130465)
+curl.exe -X POST http://127.0.0.1:8000/tool-call -H "Content-Type: application/json" -d '{ "expression": "erf(-0.5);" }' --max-time 5
+{"jsonrpc":"2.0","id":null,"result":{"content":[{"type":"text","text":"-0.5204998778130465"}]}}
 
 
 curl.exe -X POST http://127.0.0.1:8000/tool-call -H "Content-Type: application/json" -d '{ "expression": "solve(x^2-2,x);" }' --max-time 5
-{"success":true,"result":"displayinput(false,[x = -sqrt(2),x = sqrt(2)])
-"}
+{"jsonrpc":"2.0","id":null,"result":{"content":[{"type":"text","text":"[x = -sqrt(2),x = sqrt(2)]"}]}}
 
 curl.exe -X POST http://127.0.0.1:8000/tool-call -H "Content-Type: application/json" -d '{\"expression\":\"integrate(erf(-x^2/2),x);\"}' --max-time 5
-{"success":true,"result":"displayinput(false,
-             -(x*erf(x^2/2))-(sqrt(2)*gamma_incomplete(3/4,x^4/4)*x)
-                             /(sqrt(%pi)*abs(x)))
-"}
+{"jsonrpc":"2.0","id":null,"result":{"content":[{"type":"text","text":"-(x*erf(x^2/2))-(sqrt(2)*gamma_incomplete(3/4,x^4/4)*x)
+                             /(sqrt(%pi)*abs(x))"}]}}
 
  curl.exe -X POST http://127.0.0.1:8000/mcp -H "Content-Type: application/json" -d '{"method":"load","package":"clifford.mac"}' --max-time 5
 {"success":true,"result":"Package clifford.mac loaded."}
