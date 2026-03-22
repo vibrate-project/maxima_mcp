@@ -29,8 +29,8 @@
 
 (defmfun $mcp_status ()
   (print (list "Debug:" (if maxima-mcp:*debug* "ON" "OFF")
-               "Running:" (if maxima-mcp:*server-running* "YES" "NO")
-               "Port:" maxima-mcp:*port*))
+               "Running:" (if (maxima-mcp:server-running-p) "YES" "NO")
+               "Port:" (maxima-mcp:server-port )))
   $true)
   
 (add2lnc '$mcp_status $props)

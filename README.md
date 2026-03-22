@@ -50,7 +50,7 @@ mcp_status();
 **Examples**
 Start a command shell. Next example is in PowerShell:
 ```
-curl.exe -X POST http://127.0.0.1:8000/tool-call -H "Content-Type: application/json" -d '{ "expression": "erf(-0.5);" }' --max-time 5
+curl.exe -X POST http://127.0.0.1:8000/tool-call -H "Content-Type: application/json" -d '{ expression: erf(-0.5); }'
 {"jsonrpc":"2.0","id":null,"result":{"content":[{"type":"text","text":"-0.5204998778130465"}]}}
 
 
@@ -64,13 +64,12 @@ curl.exe -X POST http://127.0.0.1:8000/tool-call -H "Content-Type: application/j
  curl.exe -X POST http://127.0.0.1:8000/mcp -H "Content-Type: application/json" -d '{"method":"load","package":"clifford.mac"}' --max-time 5
 {"success":true,"result":"Package clifford.mac loaded."}
 
- curl.exe -X POST http://127.0.0.1:8000/tool-call -H "Content-Type: application/json" -d '{ "expression": "clifford(e,3);" }' --max-time 5
-{"success":true,"result":"displayinput(false,[1,1,1])
-"}
+curl.exe -X POST http://127.0.0.1:8000/tool-call -H "Content-Type: application/json" -d '{ "expression": clifford(e,3); }' --max-time 5
+{"jsonrpc":"2.0","id":null,"result":{"content":[{"type":"text","text":"[1,1,1]"}]}}
 
-curl.exe -X POST http://127.0.0.1:8000/tool-call -H "Content-Type: application/json" -d '{ "expression": "e[2].e[1];" }' --max-time 5
-{"success":true,"result":"displayinput(false,-(e[1] . e[2]))
-"}
+
+curl.exe -X POST http://127.0.0.1:8000/tool-call -H "Content-Type: application/json" -d '{ expression: e[2].e[1]; }'
+{"jsonrpc":"2.0","id":null,"result":{"content":[{"type":"text","text":"-(e[1] . e[2])"}]}}
 
 ```
 
