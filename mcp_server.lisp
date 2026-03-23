@@ -93,32 +93,7 @@
         (format nil "Maxima error: ~a" e)))))
 
 
-
-
-
-;;; Simple JSON field extraction (for demo purposes)
- 
-; (defun extract-json-field (body field-name)
-  ; (when *debug* (format t "~&[DEBUG] Extracting ~a from: ~a~%" field-name body))
-  ; Quoted - CORRECT ESCAPES
-  ; (let* ((qkey (format nil "\"~a\":\"" field-name))  ; Produces "expression":
-         ; (qstart (search qkey body)))
-    ; (when qstart
-      ; (let* ((after (+ qstart (length qkey)))
-             ; (qend (position #\" body :start after)))
-        ; (when (and after qend (> qend after))
-          ; (let ((value (subseq body after qend)))
-            ; (when *debug* (format t "~&[DEBUG] Quoted RETURNING: ~s~%" value))
-            ; (return-from extract-json-field value))))))
-  ; Unquoted - ANY COLON
-  ; (let ((colon (search ":" body)))  ; FIXED: no space!
-    ; (when colon
-      ; (let ((end (position #\} body :start colon)))
-        ; (when end
-          ; (let ((value (string-trim " ;" (subseq body (1+ colon) end))))
-            ; (when *debug* (format t "~&[DEBUG] Unquoted RETURNING: ~s~%" value))
-            ; value))))))
-
+;;; Simple JSON field extraction (for demo purposes) 
 (defun extract-json-field (body field-name)
   (when *debug* (format t "~&[DEBUG] Extracting ~a from: ~a~%" field-name body))
   ;; Quoted - CORRECT ESCAPES
@@ -190,63 +165,6 @@
 
 
 ;; Package loader
-
-; (defun handle-load (body)
-  ; (when *debug* (format t "~&[DEBUG] /load body: ~a~%" body))
-  ; (let* ((key "package:")
-         ; (kstart (search key body))
-         ; (after (when kstart (+ kstart (length key))))
-         ; (end (when after (position #\} body :start after)))
-         ; (pkg (when end (string-trim " \"" (subseq body after end)))))
-    ; (if (and pkg (plusp (length pkg)))
-        ; (handler-case
-            ; (progn
-              ; (when *debug* (format t "~&[DEBUG] Loading package: ~a~%" pkg))
-              ; (run-maxima (format nil "load(\"~a\")" pkg))
-              ; Return simple JSON string instead of json-object
-              ; (format nil "{\"success\":true,\"result\":\"Package ~a loaded.\"}" pkg))
-          ; (error (e)
-            ; (when *debug* (format t "~&[DEBUG] Load error: ~a~%" e))
-            ; (format nil "{\"success\":false,\"error\":\"Load error: ~a\"}" e)))
-        ; (format nil "{\"success\":false,\"error\":\"No package specified\"}"))))
- 
-; (defun handle-load (body)
-  ; (when *debug* (format t "~&[DEBUG] /load body: ~a~%" body))
-  ; (let ((pkg nil))
-    ; Try to extract from quoted format: {"package":"value"}
-    ; (let ((start (search "\"package\":" body)))
-      ; (when start
-        ; (let* ((after-colon (position #\: body :start start))
-               ; (quote-start (position #\" body :start (1+ after-colon)))
-               ; (quote-end (when quote-start
-                           ; (position #\" body :start (1+ quote-start)))))
-          ; (when (and quote-start quote-end (> quote-end quote-start))
-            ; (setf pkg (subseq body (1+ quote-start) quote-end))
-            ; (when *debug* (format t "~&[DEBUG] Extracted quoted package: ~a~%" pkg))))))
-    
-    ; If not found, try unquoted format: {package:value}
-    ; (when (null pkg)
-      ; (let ((start (search "package:" body)))
-        ; (when start
-          ; (let* ((after-colon (+ start (length "package:")))
-                 ; (end (or (position #\, body :start after-colon)
-                          ; (position #\} body :start after-colon)
-                          ; (length body))))
-            ; (when (> end after-colon)
-              ; (setf pkg (string-trim " \"" (subseq body after-colon end)))
-              ; (when *debug* (format t "~&[DEBUG] Extracted unquoted package: ~a~%" pkg)))))))
-    
-    ; (if (and pkg (plusp (length pkg)))
-        ; (handler-case
-            ; (progn
-              ; (when *debug* (format t "~&[DEBUG] Loading package: ~a~%" pkg))
-              ; (run-maxima (format nil "load(\"~a\")" pkg))
-              ; (format nil "{\"success\":true,\"result\":\"Package ~a loaded.\"}" pkg))
-          ; (error (e)
-            ; (when *debug* (format t "~&[DEBUG] Load error: ~a~%" e))
-            ; (format nil "{\"success\":false,\"error\":\"Load error: ~a\"}" e)))
-        ; (format nil "{\"success\":false,\"error\":\"No package specified\"}"))))
-
 (defun handle-load (body &optional id)
   (when *debug* (format t "~&[DEBUG] /load body: ~a id: ~a~%" body id))
   (let ((pkg nil))
@@ -382,54 +300,7 @@
           (when end
             (string-trim " " (subseq body after end))))))))
 
-                 
-; (defun handle-mcp (body)
-  ; (when *debug* (format t "~&[DEBUG] /mcp body: ~a~%" body))
-  ; (let ((method (extract-json-field body "method"))
-        ; (id (extract-json-id body)))
-    ; (cond
-      ; ((search "notifications/" method)
-       ; nil)
-      ; ((string= method "load")
-       ; (handle-load body))
-      ; ((search "tools/call" method)
-       ; (let ((tool-name (extract-json-field body "name")))
-         ; (cond ((or (search "compute" tool-name) (search "maxima_compute" tool-name)) 
-                ; (handle-tool-call body))
-               ; ((or (search "load" tool-name) (search "maxima_load" tool-name))
-                ; Extract package from the arguments
-                ; (let ((package-name nil))
-                  ; Find the arguments object
-                  ; (let ((args-start (search "\"arguments\":" body)))
-                    ; (when args-start
-                      ; Find "package": within arguments
-                      ; (let ((pkg-start (search "\"package\":" body :start2 args-start)))
-                        ; (when pkg-start
-                          ; (let ((colon (position #\: body :start pkg-start)))
-                            ; (when colon
-                              ; (let ((quote-start (position #\" body :start (1+ colon))))
-                                ; (when quote-start
-                                  ; (let ((quote-end (position #\" body :start (1+ quote-start))))
-                                    ; (when quote-end
-                                      ; (setf package-name (subseq body (1+ quote-start) quote-end))))))))))))
-                  ; (if package-name
-                      ; (let ((simple-body (format nil "{\"package\":\"~a\"}" package-name)))
-                        ; (handle-load simple-body))
-                      ; (format nil "{\"jsonrpc\":\"2.0\",\"id\":~a,\"error\":{\"code\":-32602,\"message\":\"Missing package name\"}}"
-                              ; (or id "null")))))
-               ; (t (format nil "{\"jsonrpc\":\"2.0\",\"id\":~a,\"error\":{\"code\":-32601,\"message\":\"Unknown tool: ~a\"}}"
-                          ; (or id "null") tool-name)))))
-      ; (t
-       ; (let ((result
-              ; (cond
-                ; ((search "initialize" method)
-                 ; "{\"protocolVersion\":\"2025-06-18\",\"serverInfo\":{\"name\":\"maxima-mcp\",\"version\":\"1.0\"},\"capabilities\":{\"tools\":{}}}")
-                ; ((search "tools/list" method)
-                 ; "{\"tools\":[{\"name\":\"maxima_compute\",\"description\":\"Evaluate a Maxima CAS expression\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"expression\":{\"type\":\"string\"}},\"required\":[\"expression\"]}},{\"name\":\"maxima_load\",\"description\":\"Load a Maxima package\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"package\":{\"type\":\"string\"}},\"required\":[\"package\"]}}]}")
-                ; ((search "ping" method) "{\"pong\":true}")
-                ; (t (json-object "error" "Unknown method")))))
-         ; (format nil "{\"jsonrpc\":\"2.0\",\"id\":~a,\"result\":~a}"
-                 ; (or id "null") result))))))
+
 
 (defun handle-mcp (body)
   (when *debug* (format t "~&[DEBUG] /mcp body: ~a~%" body))
@@ -493,32 +364,6 @@
   (finish-output stream))
 
 
-; (defun handle-mcp-sse (stream body)
-  ; (when *debug* (format t "~&[DEBUG] handle-mcp-sse called~%"))
-  ; (when (and body (plusp (length body)))
-    ; (when *debug* (format t "~&[DEBUG] SSE calling handle-mcp~%"))
-    ; (let ((result (handle-mcp body)))
-      ; (when *debug* (format t "~&[DEBUG] SSE result: ~a~%" result))
-      ; (cond
-        ; (result
-         ; Check if this is a load response (has "success" field)
-         ; (if (search "\"success\"" result)
-             ; For load, use regular HTTP response with Connection: close
-             ; (let* ((crlf (format nil "~c~c" #\Return #\Linefeed))
-                    ; (response (format nil "HTTP/1.1 200 OK~aContent-Type: application/json~aConnection: close~aContent-Length: ~d~a~a~a"
-                                      ; crlf crlf crlf (length result) crlf crlf result)))
-               ; (format stream "~a" response)
-               ; (finish-output stream)
-               ; (force-output stream)
-               ; (close stream))
-             ; For other MCP methods, use SSE with keep-alive
-             ; (send-json-response stream result)))
-        ; (t
-         ; (when *debug* (format t "~&[DEBUG] Sending 204~%"))
-         ; (let ((crlf (format nil "~c~c" #\Return #\Linefeed)))
-           ; (format stream "HTTP/1.1 204 No Content~aConnection: keep-alive~a~a~a"
-                   ; crlf crlf crlf crlf))
-         ; (finish-output stream))))))
 
 (defun handle-mcp-sse (stream body)
   (when *debug* (format t "~&[DEBUG] handle-mcp-sse called~%"))
