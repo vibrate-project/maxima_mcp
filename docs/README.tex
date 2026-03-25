@@ -1,0 +1,101 @@
+\documentclass[12pt]{article}
+\begin{document}
+	
+
+\textbf{Experimental Maxima MCP Server}
+
+A lightweight, dependency-free HTTP server for Maxima symbolic
+computation. Exposes Maxima via JSON-over-HTTP endpoints for
+tool-calling integration (MCP protocol). Runs on vanilla SBCL/Maxima
+with SB-BSD-SOCKETS only---no Quicklisp, usockets, or external libs.
+\hspace{0pt} Features
+
+\begin{itemize}
+\item
+  Pure SBCL: No dependencies (Uses native sb-bsd-sockets and sb-thread).
+\item
+  JSON API: Manual serialization/parsing for basic payloads.
+\item
+  Threaded: One thread per client, clean shutdown via
+  \emph{server-running}.
+\item
+  Maxima evaluation: Safe evaluation with auto-semicolon and error
+  capture.
+\item
+  DoS protection: 100KB body limit
+\item
+  Debug mode: Verbose logging with \emph{debug} = t.
+\item
+  Endpoints: /ping, /health, /tool-call, /mcp.
+\end{itemize}
+
+\textbf{Starting w/o no wraper}
+
+\begin{verbatim}
+load("mcp_server.lisp");
+
+:lisp (maxima-mcp:start-server 8000)
+\end{verbatim}
+
+\textbf{Starting with wrapper}
+
+\begin{verbatim}
+load("mcp_server.lisp");
+load("mcp_wrapper.lisp");
+mcp_start_server (8000);
+\end{verbatim}
+
+\textbf{Turning on/off debug output}
+
+\begin{verbatim}
+mcp_debug_on();
+
+mcp_debug_off();
+\end{verbatim}
+
+\textbf{Server status}
+
+\begin{verbatim}
+mcp_status();
+\end{verbatim}
+
+\textbf{Examples} Start a command shell. Next example is in PowerShell:
+
+\begin{verbatim}
+curl.exe -X POST http://127.0.0.1:8000/tool-call -H "Content-Type: application/json" -d '{ expression: erf(-0.5); }'
+{"jsonrpc":"2.0","id":null,"result":{"content":[{"type":"text","text":"-0.5204998778130465"}]}}
+
+
+curl.exe -X POST http://127.0.0.1:8000/tool-call -H "Content-Type: application/json" -d '{ "expression": "solve(x^2-2,x);" }' --max-time 5
+{"jsonrpc":"2.0","id":null,"result":{"content":[{"type":"text","text":"[x = -sqrt(2),x = sqrt(2)]"}]}}
+
+curl.exe -X POST http://127.0.0.1:8000/tool-call -H "Content-Type: application/json" -d '{\"expression\":\"integrate(erf(-x^2/2),x);\"}' --max-time 5
+{"jsonrpc":"2.0","id":null,"result":{"content":[{"type":"text","text":"-(x*erf(x^2/2))-(sqrt(2)*gamma_incomplete(3/4,x^4/4)*x)
+                             /(sqrt(%pi)*abs(x))"}]}}
+
+ curl.exe -X POST http://127.0.0.1:8000/mcp -H "Content-Type: application/json" -d '{"method":"load","package":"clifford.mac"}' --max-time 5
+{"success":true,"result":"Package clifford.mac loaded."}
+
+curl.exe -X POST http://127.0.0.1:8000/tool-call -H "Content-Type: application/json" -d '{ "expression": clifford(e,3); }' --max-time 5
+{"jsonrpc":"2.0","id":null,"result":{"content":[{"type":"text","text":"[1,1,1]"}]}}
+
+
+curl.exe -X POST http://127.0.0.1:8000/tool-call -H "Content-Type: application/json" -d '{ expression: e[2].e[1]; }'
+{"jsonrpc":"2.0","id":null,"result":{"content":[{"type":"text","text":"-(e[1] . e[2])"}]}}
+\end{verbatim}
+
+\textbf{Stopping}
+
+\begin{verbatim}
+:lisp (maxima-mcp:stop-server)
+\end{verbatim}
+
+or
+
+\begin{verbatim}
+mcp_stop_server();
+\end{verbatim}
+
+\textbf{Example uses} - Local LLM tool-calling (Ollama/LM Studio →
+Maxima) - Research workflows (Python → symbolic math API)
+\end{document}
