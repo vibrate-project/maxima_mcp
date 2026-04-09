@@ -21,14 +21,34 @@
 (defparameter *server-running* nil)
 (defparameter *server-socket* nil)
 
-;;; JSON helpers (minimal escaping for quote and backslash only)
+;; JSON helpers (minimal escaping for quote and backslash only)
+; (defun json-escape (string)
+  ; (with-output-to-string (out)
+    ; (loop for ch across string do
+      ; (cond ((char= ch #\") (write-string "\\\"" out))
+            ; ((char= ch #\\) (write-string "\\\\" out))
+            ; (t (write-char ch out))))))
+            
+;;; JSON helpers — RFC 8259 compliant escaping
+;;; Uses (char-code ch) comparisons only — avoids implementation-specific
+;;; character names like #\Backspace, #\Page which may not be supported
+;;; in all SBCL builds (e.g., embedded in Maxima).
 (defun json-escape (string)
   (with-output-to-string (out)
-    (loop for ch across string do
-      (cond ((char= ch #\") (write-string "\\\"" out))
-            ((char= ch #\\) (write-string "\\\\" out))
-            (t (write-char ch out))))))
-
+    (loop for ch across string
+          for code = (char-code ch)
+          do (cond
+               ((= code 34)  (write-string "\\\"" out))  ; U+0022 quotation mark
+               ((= code 92)  (write-string "\\\\" out))  ; U+005C backslash
+               ((= code  8)  (write-string "\\b"  out))  ; U+0008 backspace
+               ((= code  9)  (write-string "\\t"  out))  ; U+0009 tab
+               ((= code 10)  (write-string "\\n"  out))  ; U+000A newline
+               ((= code 12)  (write-string "\\f"  out))  ; U+000C form feed
+               ((= code 13)  (write-string "\\r"  out))  ; U+000D carriage return
+               ((< code 32)  (format out "\\u~4,'0x" code)) ; other control chars
+               ((= code 127) (write-string "\\u007f" out))  ; U+007F DEL
+               (t            (write-char ch out))))))
+               
 (defun json-string (s) (format nil "\"~a\"" (json-escape s)))
 (defun json-array (items) (format nil "[~{~a~^,~}]" (mapcar #'json-string items)))
 (defun json-object (&rest pairs)
@@ -65,71 +85,197 @@
   (char string (1- (length string))))
 
 
+; (defun clean-maxima-result (s)
+  ; (let ((s (string-trim '(#\Space #\Newline #\Return #\Tab) s)))
+    ; (if (and (> (length s) 13)
+             ; (string= (subseq s 0 13) "displayinput("))
+        ; (let* ((comma-pos (position #\, s))
+               ; (inner (subseq s (1+ comma-pos) (1- (length s)))))
+          ; (string-trim '(#\Space #\Newline #\Return #\Tab) inner))
+        ; s)))
 (defun clean-maxima-result (s)
   (let ((s (string-trim '(#\Space #\Newline #\Return #\Tab) s)))
-    (if (and (> (length s) 13)
-             (string= (subseq s 0 13) "displayinput("))
-        (let* ((comma-pos (position #\, s))
-               (inner (subseq s (1+ comma-pos) (1- (length s)))))
-          (string-trim '(#\Space #\Newline #\Return #\Tab) inner))
-        s)))
+    (let ((prefix (cond
+                    ((and (> (length s) 14)
+                          (string= (subseq s 0 14) "nodisplayinput")) "nodisplayinput(")
+                    ((and (> (length s) 13)
+                          (string= (subseq s 0 13) "displayinput(")) "displayinput(")
+                    (t nil))))
+      (if prefix
+          (let* ((plen (length prefix))
+                 ;; skip past "prefix" then find the comma separating
+                 ;; the boolean arg from the actual result
+                 (comma-pos (position #\, s :start plen))
+                 (inner (when comma-pos
+                          (subseq s (1+ comma-pos) (1- (length s))))))
+            (if inner
+                (string-trim '(#\Space #\Newline #\Return #\Tab) inner)
+                s))
+          s))))
+
+
+;;; Get Maxima user function source definition
+(defun handle-functsource (body)
+  (when *debug* (format t "~&[DEBUG] handle-functsource: ~a~%" body))
+  (let* ((fname  (string-trim " " (or (extract-json-field body "name")
+                                      (extract-json-field body "function")
+                                      "")))
+         (id     (extract-json-id body)))
+    (if (plusp (length fname))
+        (let* (;; errcatch returns [] on error, [result] on success
+               ;; Never throws MACSYMA-QUIT
+               (raw     (run-maxima (format nil "errcatch(fundef(~a))" fname)))
+               (cleaned (clean-maxima-result raw))
+               (result
+                 (cond
+                   ;; errcatch returned empty list — function not defined
+                   ((or (string= cleaned "[]")
+                        (string= cleaned "")
+                        (string= cleaned "false"))
+                    (format nil "Error: no such function: ~a" fname))
+                   ;; errcatch returned [fundef-result] — strip outer []
+                   ((and (> (length cleaned) 1)
+                         (char= (char cleaned 0) #\[)
+                         (char= (char cleaned (1- (length cleaned))) #\]))
+                    (string-trim " " (subseq cleaned 1 (1- (length cleaned)))))
+                   ;; plain result (no wrapping)
+                   (t cleaned)))
+               (escaped (json-escape result)))
+          (when *debug* (format t "~&[DEBUG] functsource result: ~a~%" result))
+          (format nil "{\"jsonrpc\":\"2.0\",\"id\":~a,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"~a\"}]}}"
+                  (or id "null") escaped))
+        (format nil "{\"jsonrpc\":\"2.0\",\"id\":~a,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"Error: no function name specified\"}]}}"
+                  (or id "null")))))
+
+                  
+; (defun run-maxima (expr)
+  ; (when *debug* (format t "~&[DEBUG] Maxima expr: ~a~%" expr))
+  ; (let ((fixed-expr (if (and (plusp (length expr))
+                             ; (not (member (last-char expr) '(#\;))))
+                        ; (concatenate 'string expr ";")
+                        ; expr)))
+    ; (when *debug* (format t "~&[DEBUG] Fixed expr: ~a~%" fixed-expr))
+    ; (handler-case
+        ; (with-input-from-string (in (format nil "~a$" fixed-expr))
+          ; (let* ((maxima::$display2d nil)
+                 ; (evaled (maxima::meval (maxima::mread in)))
+                 ; (result (with-output-to-string (out)
+                           ; (maxima::mgrind evaled out))))
+            ; (string-trim '(#\Space #\Newline #\Return #\Tab) result)))
+      ; (error (e)
+        ; (when *debug* (format t "~&[DEBUG] Maxima error: ~a~%" e))
+        ; (format nil "Maxima error: ~a" e)))))
 
 (defun run-maxima (expr)
   (when *debug* (format t "~&[DEBUG] Maxima expr: ~a~%" expr))
-  (let ((fixed-expr (if (and (plusp (length expr))
-                             (not (member (last-char expr) '(#\;))))
-                        (concatenate 'string expr ";")
-                        expr)))
-    (when *debug* (format t "~&[DEBUG] Fixed expr: ~a~%" fixed-expr))
+  (let* ((trimmed (string-trim '(#\Space #\Newline #\Return #\Tab #\; #\$) expr))
+         (input   (format nil "~a$" trimmed)))
+    (when *debug* (format t "~&[DEBUG] Input to mread: ~a~%" input))
     (handler-case
-        (with-input-from-string (in (format nil "~a$" fixed-expr))
-          (let* ((maxima::$display2d nil)
-                 (evaled (maxima::meval (maxima::mread in)))
-                 (result (with-output-to-string (out)
-                           (maxima::mgrind evaled out))))
-            (string-trim '(#\Space #\Newline #\Return #\Tab) result)))
+      (with-input-from-string (in input)
+        (let* ((maxima::$display2d nil)
+               (evaled (maxima::meval (maxima::mread in)))
+               (result (with-output-to-string (out)
+                         (maxima::mgrind evaled out))))
+          (string-trim '(#\Space #\Newline #\Return #\Tab) result)))
       (error (e)
         (when *debug* (format t "~&[DEBUG] Maxima error: ~a~%" e))
         (format nil "Maxima error: ~a" e)))))
 
+;; Simple JSON field extraction (for demo purposes) 
+; (defun extract-json-field (body field-name)
+  ; (when *debug* (format t "~&[DEBUG] Extracting ~a from: ~a~%" field-name body))
+  ; Quoted - CORRECT ESCAPES
+  ; (let* ((qkey (format nil "\"~a\":\"" field-name))  ; Produces "expression":
+         ; (qstart (search qkey body)))
+    ; (when qstart
+      ; (let* ((after (+ qstart (length qkey)))
+             ; (qend (position #\" body :start after)))
+        ; (when (and after qend (> qend after))
+          ; (let ((value (subseq body after qend)))
+            ; (when *debug* (format t "~&[DEBUG] Quoted RETURNING: ~s~%" value))
+            ; (return-from extract-json-field value))))))
+  ; Unquoted - ANY COLON
+  ; (let ((colon (search ":" body)))
+    ; (when colon
+      ; For expression field, find the matching closing brace
+      ; (let ((end (if (string= field-name "expression")
+                     ; Find the last } that matches the opening {
+                     ; (let ((depth 1)
+                           ; (pos (1+ colon)))
+                       ; (loop while (< pos (length body))
+                             ; do (let ((ch (char body pos)))
+                                  ; (cond ((char= ch #\{) (incf depth))
+                                        ; ((char= ch #\}) 
+                                         ; (decf depth)
+                                         ; (when (zerop depth)
+                                           ; (return pos))))
+                                  ; (incf pos))
+                             ; finally (return (length body))))
+                     ; For other fields, stop at comma or brace
+                     ; (or (position #\, body :start colon)
+                         ; (position #\} body :start colon)))))
+        ; (when end
+          ; (let ((value (string-trim " ;" (subseq body (1+ colon) end))))
+            ; (when *debug* (format t "~&[DEBUG] Unquoted RETURNING: ~s~%" value))
+            ; value)))))) 
 
-;;; Simple JSON field extraction (for demo purposes) 
 (defun extract-json-field (body field-name)
   (when *debug* (format t "~&[DEBUG] Extracting ~a from: ~a~%" field-name body))
-  ;; Quoted - CORRECT ESCAPES
-  (let* ((qkey (format nil "\"~a\":\"" field-name))  ; Produces "expression":
+
+  ;; Case 1: quoted key + quoted value  {"field":"value"}
+  (let* ((qkey (format nil "\"~a\":\"" field-name))
          (qstart (search qkey body)))
     (when qstart
       (let* ((after (+ qstart (length qkey)))
              (qend (position #\" body :start after)))
-        (when (and after qend (> qend after))
+        (when (and qend (> qend after))
           (let ((value (subseq body after qend)))
             (when *debug* (format t "~&[DEBUG] Quoted RETURNING: ~s~%" value))
             (return-from extract-json-field value))))))
-  ;; Unquoted - ANY COLON
-  (let ((colon (search ":" body)))
-    (when colon
-      ;; For expression field, find the matching closing brace
-      (let ((end (if (string= field-name "expression")
-                     ;; Find the last } that matches the opening {
-                     (let ((depth 1)
-                           (pos (1+ colon)))
-                       (loop while (< pos (length body))
-                             do (let ((ch (char body pos)))
-                                  (cond ((char= ch #\{) (incf depth))
-                                        ((char= ch #\}) 
-                                         (decf depth)
-                                         (when (zerop depth)
-                                           (return pos))))
-                                  (incf pos))
-                             finally (return (length body))))
-                     ;; For other fields, stop at comma or brace
-                     (or (position #\, body :start colon)
-                         (position #\} body :start colon)))))
-        (when end
-          (let ((value (string-trim " ;" (subseq body (1+ colon) end))))
+
+  ;; Case 2: quoted key + unquoted value  {"field":value}
+  (let* ((ukey (format nil "\"~a\":" field-name))
+         (ustart (search ukey body)))
+    (when ustart
+      (let* ((after (+ ustart (length ukey)))
+             (end (find-unquoted-end body after)))
+        (when (> end after)
+          (let ((value (string-trim " \"" (subseq body after end))))
+            (when *debug* (format t "~&[DEBUG] Quoted-key RETURNING: ~s~%" value))
+            (return-from extract-json-field value))))))
+
+  ;; Case 3: unquoted key + unquoted value  { field:value }
+  (let* ((ukey (format nil "~a:" field-name))
+         (ustart (search ukey body)))
+    (when ustart
+      (let* ((after (+ ustart (length ukey)))
+             (end (find-unquoted-end body after)))
+        (when (> end after)
+          (let ((value (string-trim " \"" (subseq body after end))))
             (when *debug* (format t "~&[DEBUG] Unquoted RETURNING: ~s~%" value))
-            value)))))) 
+            value))))))
+
+(defun find-unquoted-end (body start)
+  "Find the end of a JSON value starting at START.
+   Stops at , or } only when paren/bracket depth is zero.
+   Handles nested () [] {} so Maxima expressions like solve(x^2-2,x)
+   are not truncated at the internal comma."
+  (let ((depth 0)
+        (pos start))
+    (loop while (< pos (length body))
+          for ch = (char body pos)
+          do (cond
+               ((member ch '(#\( #\[ #\{)) (incf depth))
+               ((member ch '(#\) #\] #\}))
+                (if (zerop depth)
+                    (return pos)        ; closing brace at depth 0 = end
+                    (decf depth)))
+               ((and (char= ch #\,) (zerop depth))
+                (return pos)))          ; comma at depth 0 = field separator
+             (incf pos))
+    pos))  ; end of string if nothing found
+
 
 ;;; HTTP handlers
 (defun handle-health ()
@@ -266,9 +412,14 @@
                        (cond ((and method (string= method "GET")  (string= path "/"))          (handle-root))
                              ((and method (string= method "GET")  (string= path "/health"))    (handle-health))
                              ((and method (string= method "POST") (string= path "/tool-call")) (handle-tool-call body))
-                             ((and method (string= method "POST") (string= (string-trim " " path) "/mcp")) (handle-mcp-sse stream body))
-
+                             ;;((and method (string= method "POST") (string= (string-trim " " path) "/mcp")) (handle-mcp-sse stream body))
+                            ((and method (string= method "POST") (string= path "/mcp"))
+                             (let ((response (handle-mcp body)))
+                               (format stream "~a" (http-response response))
+                               (finish-output stream)
+                               (force-output stream)))
                              ((and method (string= method "POST") (string= path "/load"))      (handle-load body))
+                             ((and method (string= method "POST") (string= path "/functsource")) (handle-functsource body))
                              (t (json-object "error" "Not found")))))
                   (when response
                     (when *debug* (format t "~&[DEBUG] Response: ~a~%" response))
@@ -310,7 +461,7 @@
       ((search "notifications/" method)
        nil)
       ((string= method "load")
-       (handle-load body nil))  ; Pass nil for id for direct load
+       (handle-load body id))  ; Pass nil for id for direct load
       ((search "tools/call" method)
        (let ((tool-name (extract-json-field body "name")))
          (cond ((or (search "compute" tool-name) (search "maxima_compute" tool-name)) 
@@ -344,7 +495,18 @@
                 ((search "initialize" method)
                  "{\"protocolVersion\":\"2025-06-18\",\"serverInfo\":{\"name\":\"maxima-mcp\",\"version\":\"1.0\"},\"capabilities\":{\"tools\":{}}}")
                 ((search "tools/list" method)
-                 "{\"tools\":[{\"name\":\"maxima_compute\",\"description\":\"Evaluate a Maxima CAS expression\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"expression\":{\"type\":\"string\"}},\"required\":[\"expression\"]}},{\"name\":\"maxima_load\",\"description\":\"Load a Maxima package\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"package\":{\"type\":\"string\"}},\"required\":[\"package\"]}}]}")
+                 "{\"tools\":[
+                     {\"name\":\"maxima_compute\",
+                      \"description\":\"Evaluate a Maxima CAS expression\",
+                      \"inputSchema\":{\"type\":\"object\",\"properties\":{\"expression\":{\"type\":\"string\"}},\"required\":[\"expression\"]}},
+                     {\"name\":\"maxima_load\",
+                      \"description\":\"Load a Maxima package\",
+                      \"inputSchema\":{\"type\":\"object\",\"properties\":{\"package\":{\"type\":\"string\"}},\"required\":[\"package\"]}},
+                     {\"name\":\"maxima_functsource\",
+                      \"description\":\"Get the source definition of a Maxima user function\",
+                      \"inputSchema\":{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"}},\"required\":[\"name\"]}}
+                  ]}")                 
+                 
                 ((search "ping" method) "{\"pong\":true}")
                 (t (json-object "error" "Unknown method")))))
          (format nil "{\"jsonrpc\":\"2.0\",\"id\":~a,\"result\":~a}"
