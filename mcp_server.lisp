@@ -114,34 +114,44 @@
           s))))
 
 
+(defun extract-tool-argument (body arg-name)
+  "Extract arg-name value from nested \"arguments\":{\"arg-name\":\"value\"}"
+  (let* ((args-start (search "\"arguments\":{" body))
+         (arg-key    (format nil "\"~a\":\"" arg-name))  ; include opening quote
+         (arg-start  (when args-start
+                       (search arg-key body :start2 args-start))))
+    (when arg-start
+      (let* ((val-start (+ arg-start (length arg-key)))
+             (val-end   (position #\" body :start val-start)))  ; closing quote
+        (when (and val-end (> val-end val-start))
+          (let ((value (subseq body val-start val-end)))
+            (when *debug* (format t "~&[DEBUG] Tool arg ~a: ~s~%" arg-name value))
+            value))))))
+          
 ;;; Get Maxima user function source definition
 (defun handle-functsource (body)
   (when *debug* (format t "~&[DEBUG] handle-functsource: ~a~%" body))
-  (let* ((fname  (string-trim " " (or (extract-json-field body "name")
-                                      (extract-json-field body "function")
-                                      "")))
+  (let* ((fname  (or (extract-tool-argument body "name")    ; MCP tools/call standard
+                     (extract-json-field body "name")       ; direct HTTP fallback
+                     (extract-json-field body "function")   ; legacy fallback
+                     ""))
          (id     (extract-json-id body)))
-    (if (plusp (length fname))
-        (let* (;; errcatch returns [] on error, [result] on success
-               ;; Never throws MACSYMA-QUIT
-               (raw     (run-maxima (format nil "errcatch(fundef(~a))" fname)))
+    (when *debug* (format t "~&[DEBUG] functsource fname: ~a id: ~a~%" fname id))
+    (if (plusp (length (string-trim " " fname)))
+        (let* ((raw     (run-maxima (format nil "errcatch(fundef(~a))" fname)))
                (cleaned (clean-maxima-result raw))
                (result
                  (cond
-                   ;; errcatch returned empty list — function not defined
-                   ((or (string= cleaned "[]")
-                        (string= cleaned "")
-                        (string= cleaned "false"))
+                   ;; errcatch returned [] — not defined
+                   ((or (string= cleaned "[]") (string= cleaned "") (string= cleaned "false"))
                     (format nil "Error: no such function: ~a" fname))
-                   ;; errcatch returned [fundef-result] — strip outer []
+                   ;; errcatch returned [result] — strip []
                    ((and (> (length cleaned) 1)
                          (char= (char cleaned 0) #\[)
                          (char= (char cleaned (1- (length cleaned))) #\]))
                     (string-trim " " (subseq cleaned 1 (1- (length cleaned)))))
-                   ;; plain result (no wrapping)
                    (t cleaned)))
                (escaped (json-escape result)))
-          (when *debug* (format t "~&[DEBUG] functsource result: ~a~%" result))
           (format nil "{\"jsonrpc\":\"2.0\",\"id\":~a,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"~a\"}]}}"
                   (or id "null") escaped))
         (format nil "{\"jsonrpc\":\"2.0\",\"id\":~a,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"Error: no function name specified\"}]}}"
@@ -487,6 +497,7 @@
                         (handle-load simple-body id))  ; Pass the id!
                       (format nil "{\"jsonrpc\":\"2.0\",\"id\":~a,\"error\":{\"code\":-32602,\"message\":\"Missing package name\"}}"
                               (or id "null")))))
+                ((or (search "functsource" tool-name) (search "maxima_functsource" tool-name))  (handle-functsource body))       
                (t (format nil "{\"jsonrpc\":\"2.0\",\"id\":~a,\"error\":{\"code\":-32601,\"message\":\"Unknown tool: ~a\"}}"
                           (or id "null") tool-name)))))
       (t

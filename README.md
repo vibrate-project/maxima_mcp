@@ -61,9 +61,22 @@ curl.exe -X POST http://127.0.0.1:8000/tool-call -H "Content-Type: application/j
 {"jsonrpc":"2.0","id":null,"result":{"content":[{"type":"text","text":"-(x*erf(x^2/2))-(sqrt(2)*gamma_incomplete(3/4,x^4/4)*x)
                              /(sqrt(%pi)*abs(x))"}]}}
 
- curl.exe -X POST http://127.0.0.1:8000/mcp -H "Content-Type: application/json" -d '{"method":"load","package":"clifford.mac"}' --max-time 5
+curl.exe -X POST http://127.0.0.1:8000/mcp -H "Content-Type: application/json" -d '{"method":"load","package":"clifford.mac"}' --max-time 5
 {"success":true,"result":"Package clifford.mac loaded."}
 
+```
+
+Getting the body of a custom function
+
+```
+curl.exe -X POST http://127.0.0.1:8000/functsource -H "Content-Type: application/json"  -d '{"name":"testf"}'
+{"jsonrpc":"2.0","id":null,"result":{"content":[{"type":"text","text":"testf(x):=true"}]}}
+
+```
+
+Loading a custom package: 
+
+```
 curl.exe -X POST http://127.0.0.1:8000/tool-call -H "Content-Type: application/json" -d '{ "expression": clifford(e,3); }' --max-time 5
 {"jsonrpc":"2.0","id":null,"result":{"content":[{"type":"text","text":"[1,1,1]"}]}}
 
