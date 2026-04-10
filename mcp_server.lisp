@@ -396,17 +396,36 @@
                              ((and method (string= method "GET")  (string= path "/health"))    (handle-health))
                              ((and method (string= method "POST") (string= path "/tool-call")) (handle-tool-call body))
                              ;; FIXED — consistent with all other routes
-                             ((and method (string= method "POST") (string= path "/mcp")) (handle-mcp body))
+                             ((and method (string= method "POST") (string= path "/mcp"))
+                             (let ((mcp-response (handle-mcp body)))
+                               (if mcp-response
+                                   mcp-response
+                                   :accepted)))
                             ; ((and method (string= method "POST") (string= (string-trim " " path) "/mcp")) (handle-mcp-sse stream body))
     
                              ((and method (string= method "POST") (string= path "/load"))      (handle-load body))
                              ((and method (string= method "POST") (string= path "/functsource")) (handle-functsource body))
                              (t (json-object "error" "Not found")))))
-                  (when response
-                    (when *debug* (format t "~&[DEBUG] Response: ~a~%" response))
-                    (format stream "~a" (http-response response))
-                    (finish-output stream)
-                    (force-output stream)))
+                  ; (when response
+                    ; (when *debug* (format t "~&[DEBUG] Response: ~a~%" response))
+                    ; (format stream "~a" (http-response response))
+                    ; (finish-output stream)
+                    ; (force-output stream)))
+                    (cond
+                      ((eq response :accepted)
+                       (when *debug* (format t "~&[DEBUG] Response: 202 Accepted~%"))
+                       (format stream "HTTP/1.1 202 Accepted~c~cConnection: close~c~c~c~c"
+                               #\Return #\Linefeed
+                               #\Return #\Linefeed
+                               #\Return #\Linefeed)
+                       (finish-output stream)
+                       (force-output stream))
+
+                      (response
+                       (when *debug* (format t "~&[DEBUG] Response: ~a~%" response))
+                       (format stream "~a" (http-response response))
+                       (finish-output stream)
+                       (force-output stream))))
                 ;; Close connection if client requested it
                 (let ((conn (cdr (assoc "CONNECTION" headers :test #'string=))))
                   (when (and conn (string-equal (string-trim " " conn) "close"))
@@ -481,9 +500,12 @@
       (t
        (let ((result
                (cond
-                 ((search "initialize" method)
-                  "{\"protocolVersion\":\"2025-06-18\",\"serverInfo\":{\"name\":\"maxima-mcp\",\"version\":\"1.0\"},\"capabilities\":{\"tools\":{}}}")
-
+                 ; ((search "initialize" method)
+                  ; "{\"protocolVersion\":\"2025-06-18\",\"serverInfo\":{\"name\":\"maxima-mcp\",\"version\":\"1.0\"},\"capabilities\":{\"tools\":{}}}")
+                  ((search "initialize" method)
+                   "{\"protocolVersion\":\"2025-06-18\",\
+                  \"serverInfo\":{\"name\":\"maxima-mcp\",\"version\":\"1.0\"},\
+                  \"capabilities\":{\"tools\":{\"listChanged\":false}}}")
                  ((search "tools/list" method)
                   "{\"tools\":[
                      {\"name\":\"maxima_compute\",
