@@ -163,24 +163,45 @@
         (format nil "{\"jsonrpc\":\"2.0\",\"id\":~a,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"Error: no function name specified\"}]}}"
                   (or id "null")))))
 
-                  
+(defun safe-expr-p (expr)
+  (and (not (search ":lisp" expr :test #'char-equal))
+       (not (search "quit(" expr :test #'char-equal))))                  
+
+; (defun run-maxima (expr)
+  ; (when *debug* (format t "~&[DEBUG] Maxima expr: ~a~%" expr))
+  ; (let* ((trimmed (string-trim '(#\Space #\Newline #\Return #\Tab #\; #\$) expr))
+         ; (input   (format nil "~a$" trimmed)))
+    ; (when *debug* (format t "~&[DEBUG] Input to mread: ~a~%" input))
+    ; (handler-case
+      ; (with-input-from-string (in input)
+        ; (let* ((maxima::$display2d nil)
+               ; (evaled (maxima::meval (maxima::mread in)))
+               ; (result (with-output-to-string (out)
+                         ; (maxima::mgrind evaled out))))
+          ; (string-trim '(#\Space #\Newline #\Return #\Tab) result)))
+      ; (error (e)
+        ; (when *debug* (format t "~&[DEBUG] Maxima error: ~a~%" e))
+        ; (format nil "Maxima error: ~a" e)))))
 
 (defun run-maxima (expr)
   (when *debug* (format t "~&[DEBUG] Maxima expr: ~a~%" expr))
-  (let* ((trimmed (string-trim '(#\Space #\Newline #\Return #\Tab #\; #\$) expr))
-         (input   (format nil "~a$" trimmed)))
-    (when *debug* (format t "~&[DEBUG] Input to mread: ~a~%" input))
-    (handler-case
-      (with-input-from-string (in input)
-        (let* ((maxima::$display2d nil)
-               (evaled (maxima::meval (maxima::mread in)))
-               (result (with-output-to-string (out)
-                         (maxima::mgrind evaled out))))
-          (string-trim '(#\Space #\Newline #\Return #\Tab) result)))
-      (error (e)
-        (when *debug* (format t "~&[DEBUG] Maxima error: ~a~%" e))
-        (format nil "Maxima error: ~a" e)))))
-
+  (let* ((trimmed (string-trim '(#\Space #\Newline #\Return #\Tab #\; #\$) expr)))
+    (unless (safe-expr-p trimmed)
+      (when *debug* (format t "~&[DEBUG] Blocked expr: ~a~%" trimmed))
+      (return-from run-maxima "Error: expression blocked by security policy"))
+    (let ((input (format nil "~a$" trimmed)))
+      (when *debug* (format t "~&[DEBUG] Input to mread: ~a~%" input))
+      (handler-case
+          (with-input-from-string (in input)
+            (let* ((maxima::$display2d nil)
+                   (evaled (maxima::meval (maxima::mread in)))
+                   (result (with-output-to-string (out)
+                             (maxima::mgrind evaled out))))
+              (string-trim '(#\Space #\Newline #\Return #\Tab) result)))
+        (error (e)
+          (when *debug* (format t "~&[DEBUG] Maxima error: ~a~%" e))
+          (format nil "Maxima error: ~a" e))))))
+          
 ;; Simple JSON field extraction (for demo purposes) 
 (defun extract-json-field (body field-name)
   (when *debug* (format t "~&[DEBUG] Extracting ~a from: ~a~%" field-name body))
@@ -413,65 +434,7 @@
 
 
 
-; (defun handle-mcp (body)
-  ; (when *debug* (format t "~&[DEBUG] /mcp body: ~a~%" body))
-  ; (let ((method (extract-json-field body "method"))
-        ; (id (extract-json-id body)))
-    ; (cond
-      ; ((search "notifications/" method)
-       ; nil)
-      ; ((string= method "load")
-       ; (handle-load body id))  ; Pass nil for id for direct load
-      ; ((search "tools/call" method)
-       ; (let ((tool-name (extract-json-field body "name")))
-         ; (cond ((or (search "compute" tool-name) (search "maxima_compute" tool-name)) 
-                ; (handle-tool-call body))
-               ; ((or (search "load" tool-name) (search "maxima_load" tool-name))
-                ; Extract package from the arguments
-                ; (let ((package-name nil))
-                  ; Find the arguments object
-                  ; (let ((args-start (search "\"arguments\":" body)))
-                    ; (when args-start
-                      ; Find "package": within arguments
-                      ; (let ((pkg-start (search "\"package\":" body :start2 args-start)))
-                        ; (when pkg-start
-                          ; (let ((colon (position #\: body :start pkg-start)))
-                            ; (when colon
-                              ; (let ((quote-start (position #\" body :start (1+ colon))))
-                                ; (when quote-start
-                                  ; (let ((quote-end (position #\" body :start (1+ quote-start))))
-                                    ; (when quote-end
-                                      ; (setf package-name (subseq body (1+ quote-start) quote-end))))))))))))
-                  ; (if package-name
-                      ; (let ((simple-body (format nil "{\"package\":\"~a\"}" package-name)))
-                        ; (handle-load simple-body id))  ; Pass the id!
-                      ; (format nil "{\"jsonrpc\":\"2.0\",\"id\":~a,\"error\":{\"code\":-32602,\"message\":\"Missing package name\"}}"
-                              ; (or id "null")))))
-                ; ((or (search "functsource" tool-name) (search "maxima_functsource" tool-name))  (handle-functsource body))       
-               ; (t (format nil "{\"jsonrpc\":\"2.0\",\"id\":~a,\"error\":{\"code\":-32601,\"message\":\"Unknown tool: ~a\"}}"
-                          ; (or id "null") tool-name)))))
-      ; (t
-       ; (let ((result
-              ; (cond
-                ; ((search "initialize" method)
-                 ; "{\"protocolVersion\":\"2025-06-18\",\"serverInfo\":{\"name\":\"maxima-mcp\",\"version\":\"1.0\"},\"capabilities\":{\"tools\":{}}}")
-                ; ((search "tools/list" method)
-                 ; "{\"tools\":[
-                     ; {\"name\":\"maxima_compute\",
-                      ; \"description\":\"Evaluate a Maxima CAS expression\",
-                      ; \"inputSchema\":{\"type\":\"object\",\"properties\":{\"expression\":{\"type\":\"string\"}},\"required\":[\"expression\"]}},
-                     ; {\"name\":\"maxima_load\",
-                      ; \"description\":\"Load a Maxima package\",
-                      ; \"inputSchema\":{\"type\":\"object\",\"properties\":{\"package\":{\"type\":\"string\"}},\"required\":[\"package\"]}},
-                     ; {\"name\":\"maxima_functsource\",
-                      ; \"description\":\"Get the source definition of a Maxima user function\",
-                      ; \"inputSchema\":{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"}},\"required\":[\"name\"]}}
-                  ; ]}")                 
-                 
-                ; ((search "ping" method) "{\"pong\":true}")
-                ; (t (json-object "error" "Unknown method")))))
-         ; (format nil "{\"jsonrpc\":\"2.0\",\"id\":~a,\"result\":~a}"
-                 ; (or id "null") result)))))) 
+
 
 (defun handle-mcp (body)
   (when *debug* (format t "~&[DEBUG] /mcp body: ~a~%" body))
