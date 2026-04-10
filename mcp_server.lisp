@@ -21,14 +21,7 @@
 (defparameter *server-running* nil)
 (defparameter *server-socket* nil)
 
-;; JSON helpers (minimal escaping for quote and backslash only)
-; (defun json-escape (string)
-  ; (with-output-to-string (out)
-    ; (loop for ch across string do
-      ; (cond ((char= ch #\") (write-string "\\\"" out))
-            ; ((char= ch #\\) (write-string "\\\\" out))
-            ; (t (write-char ch out))))))
-            
+           
 ;;; JSON helpers — RFC 8259 compliant escaping
 ;;; Uses (char-code ch) comparisons only — avoids implementation-specific
 ;;; character names like #\Backspace, #\Page which may not be supported
@@ -84,15 +77,6 @@
 (defun last-char (string)
   (char string (1- (length string))))
 
-
-; (defun clean-maxima-result (s)
-  ; (let ((s (string-trim '(#\Space #\Newline #\Return #\Tab) s)))
-    ; (if (and (> (length s) 13)
-             ; (string= (subseq s 0 13) "displayinput("))
-        ; (let* ((comma-pos (position #\, s))
-               ; (inner (subseq s (1+ comma-pos) (1- (length s)))))
-          ; (string-trim '(#\Space #\Newline #\Return #\Tab) inner))
-        ; s)))
 (defun clean-maxima-result (s)
   (let ((s (string-trim '(#\Space #\Newline #\Return #\Tab) s)))
     (let ((prefix (cond
@@ -158,23 +142,6 @@
                   (or id "null")))))
 
                   
-; (defun run-maxima (expr)
-  ; (when *debug* (format t "~&[DEBUG] Maxima expr: ~a~%" expr))
-  ; (let ((fixed-expr (if (and (plusp (length expr))
-                             ; (not (member (last-char expr) '(#\;))))
-                        ; (concatenate 'string expr ";")
-                        ; expr)))
-    ; (when *debug* (format t "~&[DEBUG] Fixed expr: ~a~%" fixed-expr))
-    ; (handler-case
-        ; (with-input-from-string (in (format nil "~a$" fixed-expr))
-          ; (let* ((maxima::$display2d nil)
-                 ; (evaled (maxima::meval (maxima::mread in)))
-                 ; (result (with-output-to-string (out)
-                           ; (maxima::mgrind evaled out))))
-            ; (string-trim '(#\Space #\Newline #\Return #\Tab) result)))
-      ; (error (e)
-        ; (when *debug* (format t "~&[DEBUG] Maxima error: ~a~%" e))
-        ; (format nil "Maxima error: ~a" e)))))
 
 (defun run-maxima (expr)
   (when *debug* (format t "~&[DEBUG] Maxima expr: ~a~%" expr))
@@ -193,43 +160,6 @@
         (format nil "Maxima error: ~a" e)))))
 
 ;; Simple JSON field extraction (for demo purposes) 
-; (defun extract-json-field (body field-name)
-  ; (when *debug* (format t "~&[DEBUG] Extracting ~a from: ~a~%" field-name body))
-  ; Quoted - CORRECT ESCAPES
-  ; (let* ((qkey (format nil "\"~a\":\"" field-name))  ; Produces "expression":
-         ; (qstart (search qkey body)))
-    ; (when qstart
-      ; (let* ((after (+ qstart (length qkey)))
-             ; (qend (position #\" body :start after)))
-        ; (when (and after qend (> qend after))
-          ; (let ((value (subseq body after qend)))
-            ; (when *debug* (format t "~&[DEBUG] Quoted RETURNING: ~s~%" value))
-            ; (return-from extract-json-field value))))))
-  ; Unquoted - ANY COLON
-  ; (let ((colon (search ":" body)))
-    ; (when colon
-      ; For expression field, find the matching closing brace
-      ; (let ((end (if (string= field-name "expression")
-                     ; Find the last } that matches the opening {
-                     ; (let ((depth 1)
-                           ; (pos (1+ colon)))
-                       ; (loop while (< pos (length body))
-                             ; do (let ((ch (char body pos)))
-                                  ; (cond ((char= ch #\{) (incf depth))
-                                        ; ((char= ch #\}) 
-                                         ; (decf depth)
-                                         ; (when (zerop depth)
-                                           ; (return pos))))
-                                  ; (incf pos))
-                             ; finally (return (length body))))
-                     ; For other fields, stop at comma or brace
-                     ; (or (position #\, body :start colon)
-                         ; (position #\} body :start colon)))))
-        ; (when end
-          ; (let ((value (string-trim " ;" (subseq body (1+ colon) end))))
-            ; (when *debug* (format t "~&[DEBUG] Unquoted RETURNING: ~s~%" value))
-            ; value)))))) 
-
 (defun extract-json-field (body field-name)
   (when *debug* (format t "~&[DEBUG] Extracting ~a from: ~a~%" field-name body))
 
@@ -422,12 +352,10 @@
                        (cond ((and method (string= method "GET")  (string= path "/"))          (handle-root))
                              ((and method (string= method "GET")  (string= path "/health"))    (handle-health))
                              ((and method (string= method "POST") (string= path "/tool-call")) (handle-tool-call body))
-                             ;;((and method (string= method "POST") (string= (string-trim " " path) "/mcp")) (handle-mcp-sse stream body))
-                            ((and method (string= method "POST") (string= path "/mcp"))
-                             (let ((response (handle-mcp body)))
-                               (format stream "~a" (http-response response))
-                               (finish-output stream)
-                               (force-output stream)))
+                             ;; FIXED — consistent with all other routes
+                             ((and method (string= method "POST") (string= path "/mcp")) (handle-mcp body))
+                            ; ((and method (string= method "POST") (string= (string-trim " " path) "/mcp")) (handle-mcp-sse stream body))
+    
                              ((and method (string= method "POST") (string= path "/load"))      (handle-load body))
                              ((and method (string= method "POST") (string= path "/functsource")) (handle-functsource body))
                              (t (json-object "error" "Not found")))))
