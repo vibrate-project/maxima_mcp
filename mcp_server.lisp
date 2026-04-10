@@ -4,6 +4,7 @@
 
 ;; (C) 2026 Dimiter Prodanov, IICT
 ;; help from Deepseek and Calude 
+;; version 1
 
 (in-package :cl-user)
 (require :sb-bsd-sockets)
@@ -62,16 +63,6 @@
     (write-char #\} out)))
 
 ;;; HTTP response helper
-; (defun http-response (content &optional (status 200))
-  ; (let ((body (if (stringp content) content (princ-to-string content))))
-    ; (format nil "HTTP/1.1 ~d OK~c~cContent-Type: application/json~c~cContent-Length: ~d~c~cConnection: close~c~c~c~c~a"
-      ; status
-      ; #\Return #\Linefeed
-      ; #\Return #\Linefeed
-      ; (length body)
-      ; #\Return #\Linefeed
-      ; #\Return #\Linefeed #\Return #\Linefeed
-      ; body)))
       
 (defun http-status-text (code)
   (case code
@@ -167,21 +158,6 @@
   (and (not (search ":lisp" expr :test #'char-equal))
        (not (search "quit(" expr :test #'char-equal))))                  
 
-; (defun run-maxima (expr)
-  ; (when *debug* (format t "~&[DEBUG] Maxima expr: ~a~%" expr))
-  ; (let* ((trimmed (string-trim '(#\Space #\Newline #\Return #\Tab #\; #\$) expr))
-         ; (input   (format nil "~a$" trimmed)))
-    ; (when *debug* (format t "~&[DEBUG] Input to mread: ~a~%" input))
-    ; (handler-case
-      ; (with-input-from-string (in input)
-        ; (let* ((maxima::$display2d nil)
-               ; (evaled (maxima::meval (maxima::mread in)))
-               ; (result (with-output-to-string (out)
-                         ; (maxima::mgrind evaled out))))
-          ; (string-trim '(#\Space #\Newline #\Return #\Tab) result)))
-      ; (error (e)
-        ; (when *debug* (format t "~&[DEBUG] Maxima error: ~a~%" e))
-        ; (format nil "Maxima error: ~a" e)))))
 
 (defun run-maxima (expr)
   (when *debug* (format t "~&[DEBUG] Maxima expr: ~a~%" expr))
@@ -401,16 +377,12 @@
                                (if mcp-response
                                    mcp-response
                                    :accepted)))
-                            ; ((and method (string= method "POST") (string= (string-trim " " path) "/mcp")) (handle-mcp-sse stream body))
+
     
                              ((and method (string= method "POST") (string= path "/load"))      (handle-load body))
                              ((and method (string= method "POST") (string= path "/functsource")) (handle-functsource body))
                              (t (json-object "error" "Not found")))))
-                  ; (when response
-                    ; (when *debug* (format t "~&[DEBUG] Response: ~a~%" response))
-                    ; (format stream "~a" (http-response response))
-                    ; (finish-output stream)
-                    ; (force-output stream)))
+
                     (cond
                       ((eq response :accepted)
                        (when *debug* (format t "~&[DEBUG] Response: 202 Accepted~%"))
@@ -450,8 +422,6 @@
                           (end2 end2))))
           (when end
             (string-trim " " (subseq body after end))))))))
-
-
 
 
 
@@ -500,8 +470,6 @@
       (t
        (let ((result
                (cond
-                 ; ((search "initialize" method)
-                  ; "{\"protocolVersion\":\"2025-06-18\",\"serverInfo\":{\"name\":\"maxima-mcp\",\"version\":\"1.0\"},\"capabilities\":{\"tools\":{}}}")
                   ((search "initialize" method)
                    "{\"protocolVersion\":\"2025-06-18\",\
                   \"serverInfo\":{\"name\":\"maxima-mcp\",\"version\":\"1.0\"},\
