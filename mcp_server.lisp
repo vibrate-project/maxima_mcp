@@ -391,50 +391,116 @@
 
 
 
+; (defun handle-mcp (body)
+  ; (when *debug* (format t "~&[DEBUG] /mcp body: ~a~%" body))
+  ; (let ((method (extract-json-field body "method"))
+        ; (id (extract-json-id body)))
+    ; (cond
+      ; ((search "notifications/" method)
+       ; nil)
+      ; ((string= method "load")
+       ; (handle-load body id))  ; Pass nil for id for direct load
+      ; ((search "tools/call" method)
+       ; (let ((tool-name (extract-json-field body "name")))
+         ; (cond ((or (search "compute" tool-name) (search "maxima_compute" tool-name)) 
+                ; (handle-tool-call body))
+               ; ((or (search "load" tool-name) (search "maxima_load" tool-name))
+                ; Extract package from the arguments
+                ; (let ((package-name nil))
+                  ; Find the arguments object
+                  ; (let ((args-start (search "\"arguments\":" body)))
+                    ; (when args-start
+                      ; Find "package": within arguments
+                      ; (let ((pkg-start (search "\"package\":" body :start2 args-start)))
+                        ; (when pkg-start
+                          ; (let ((colon (position #\: body :start pkg-start)))
+                            ; (when colon
+                              ; (let ((quote-start (position #\" body :start (1+ colon))))
+                                ; (when quote-start
+                                  ; (let ((quote-end (position #\" body :start (1+ quote-start))))
+                                    ; (when quote-end
+                                      ; (setf package-name (subseq body (1+ quote-start) quote-end))))))))))))
+                  ; (if package-name
+                      ; (let ((simple-body (format nil "{\"package\":\"~a\"}" package-name)))
+                        ; (handle-load simple-body id))  ; Pass the id!
+                      ; (format nil "{\"jsonrpc\":\"2.0\",\"id\":~a,\"error\":{\"code\":-32602,\"message\":\"Missing package name\"}}"
+                              ; (or id "null")))))
+                ; ((or (search "functsource" tool-name) (search "maxima_functsource" tool-name))  (handle-functsource body))       
+               ; (t (format nil "{\"jsonrpc\":\"2.0\",\"id\":~a,\"error\":{\"code\":-32601,\"message\":\"Unknown tool: ~a\"}}"
+                          ; (or id "null") tool-name)))))
+      ; (t
+       ; (let ((result
+              ; (cond
+                ; ((search "initialize" method)
+                 ; "{\"protocolVersion\":\"2025-06-18\",\"serverInfo\":{\"name\":\"maxima-mcp\",\"version\":\"1.0\"},\"capabilities\":{\"tools\":{}}}")
+                ; ((search "tools/list" method)
+                 ; "{\"tools\":[
+                     ; {\"name\":\"maxima_compute\",
+                      ; \"description\":\"Evaluate a Maxima CAS expression\",
+                      ; \"inputSchema\":{\"type\":\"object\",\"properties\":{\"expression\":{\"type\":\"string\"}},\"required\":[\"expression\"]}},
+                     ; {\"name\":\"maxima_load\",
+                      ; \"description\":\"Load a Maxima package\",
+                      ; \"inputSchema\":{\"type\":\"object\",\"properties\":{\"package\":{\"type\":\"string\"}},\"required\":[\"package\"]}},
+                     ; {\"name\":\"maxima_functsource\",
+                      ; \"description\":\"Get the source definition of a Maxima user function\",
+                      ; \"inputSchema\":{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"}},\"required\":[\"name\"]}}
+                  ; ]}")                 
+                 
+                ; ((search "ping" method) "{\"pong\":true}")
+                ; (t (json-object "error" "Unknown method")))))
+         ; (format nil "{\"jsonrpc\":\"2.0\",\"id\":~a,\"result\":~a}"
+                 ; (or id "null") result)))))) 
+
 (defun handle-mcp (body)
   (when *debug* (format t "~&[DEBUG] /mcp body: ~a~%" body))
   (let ((method (extract-json-field body "method"))
-        (id (extract-json-id body)))
+        (id     (extract-json-id body)))
     (cond
+      ;; Notifications — no response needed
       ((search "notifications/" method)
        nil)
+
+      ;; Direct load method (non-MCP path)
       ((string= method "load")
-       (handle-load body id))  ; Pass nil for id for direct load
+       (handle-load body id))
+
+      ;; tools/call dispatch
       ((search "tools/call" method)
        (let ((tool-name (extract-json-field body "name")))
-         (cond ((or (search "compute" tool-name) (search "maxima_compute" tool-name)) 
-                (handle-tool-call body))
-               ((or (search "load" tool-name) (search "maxima_load" tool-name))
-                ;; Extract package from the arguments
-                (let ((package-name nil))
-                  ;; Find the arguments object
-                  (let ((args-start (search "\"arguments\":" body)))
-                    (when args-start
-                      ;; Find "package": within arguments
-                      (let ((pkg-start (search "\"package\":" body :start2 args-start)))
-                        (when pkg-start
-                          (let ((colon (position #\: body :start pkg-start)))
-                            (when colon
-                              (let ((quote-start (position #\" body :start (1+ colon))))
-                                (when quote-start
-                                  (let ((quote-end (position #\" body :start (1+ quote-start))))
-                                    (when quote-end
-                                      (setf package-name (subseq body (1+ quote-start) quote-end))))))))))))
-                  (if package-name
-                      (let ((simple-body (format nil "{\"package\":\"~a\"}" package-name)))
-                        (handle-load simple-body id))  ; Pass the id!
-                      (format nil "{\"jsonrpc\":\"2.0\",\"id\":~a,\"error\":{\"code\":-32602,\"message\":\"Missing package name\"}}"
-                              (or id "null")))))
-                ((or (search "functsource" tool-name) (search "maxima_functsource" tool-name))  (handle-functsource body))       
-               (t (format nil "{\"jsonrpc\":\"2.0\",\"id\":~a,\"error\":{\"code\":-32601,\"message\":\"Unknown tool: ~a\"}}"
-                          (or id "null") tool-name)))))
+         (cond
+           ;; maxima_compute
+           ((or (search "compute" tool-name)
+                (search "maxima_compute" tool-name))
+            (handle-tool-call body))
+
+           ;; maxima_load
+           ((or (search "load" tool-name)
+                (search "maxima_load" tool-name))
+            (let ((package-name (extract-tool-argument body "package")))
+              (if package-name
+                  (handle-load (format nil "{\"package\":\"~a\"}" package-name) id)
+                  (format nil "{\"jsonrpc\":\"2.0\",\"id\":~a,\"error\":{\"code\":-32602,\"message\":\"Missing package name\"}}"
+                          (or id "null")))))
+
+           ;; maxima_functsource
+           ((or (search "functsource" tool-name)
+                (search "maxima_functsource" tool-name))
+            (handle-functsource body))
+
+           ;; unknown tool
+           (t
+            (format nil "{\"jsonrpc\":\"2.0\",\"id\":~a,\"error\":{\"code\":-32601,\"message\":\"Unknown tool: ~a\"}}"
+                    (or id "null") tool-name)))))
+
+      ;; Standard MCP methods
       (t
        (let ((result
-              (cond
-                ((search "initialize" method)
-                 "{\"protocolVersion\":\"2025-06-18\",\"serverInfo\":{\"name\":\"maxima-mcp\",\"version\":\"1.0\"},\"capabilities\":{\"tools\":{}}}")
-                ((search "tools/list" method)
-                 "{\"tools\":[
+               (cond
+                 ((search "initialize" method)
+                  "{\"protocolVersion\":\"2025-06-18\",\"serverInfo\":{\"name\":\"maxima-mcp\",\"version\":\"1.0\"},\"capabilities\":{\"tools\":{}}}")
+
+                 ((search "tools/list" method)
+                  "{\"tools\":[
                      {\"name\":\"maxima_compute\",
                       \"description\":\"Evaluate a Maxima CAS expression\",
                       \"inputSchema\":{\"type\":\"object\",\"properties\":{\"expression\":{\"type\":\"string\"}},\"required\":[\"expression\"]}},
@@ -444,53 +510,55 @@
                      {\"name\":\"maxima_functsource\",
                       \"description\":\"Get the source definition of a Maxima user function\",
                       \"inputSchema\":{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"}},\"required\":[\"name\"]}}
-                  ]}")                 
-                 
-                ((search "ping" method) "{\"pong\":true}")
-                (t (json-object "error" "Unknown method")))))
+                  ]}")
+
+                 ((search "ping" method)
+                  "{\"pong\":true}")
+
+                 (t (json-object "error" "Unknown method")))))
          (format nil "{\"jsonrpc\":\"2.0\",\"id\":~a,\"result\":~a}"
-                 (or id "null") result)))))) 
-         
+                 (or id "null") result))))))
+                 
 ;; JSON response
-(defun send-json-response (stream json)
-  (format stream "HTTP/1.1 200 OK~c~cContent-Type: text/event-stream~c~cCache-Control: no-cache~c~cConnection: keep-alive~c~c~c~cdata: ~a~c~c~c~c"
-          #\Return #\Linefeed
-          #\Return #\Linefeed
-          #\Return #\Linefeed
-          #\Return #\Linefeed
-          #\Return #\Linefeed
-          json
-          #\Return #\Linefeed
-          #\Return #\Linefeed)
-  (finish-output stream))
+; (defun send-json-response (stream json)
+  ; (format stream "HTTP/1.1 200 OK~c~cContent-Type: text/event-stream~c~cCache-Control: no-cache~c~cConnection: keep-alive~c~c~c~cdata: ~a~c~c~c~c"
+          ; #\Return #\Linefeed
+          ; #\Return #\Linefeed
+          ; #\Return #\Linefeed
+          ; #\Return #\Linefeed
+          ; #\Return #\Linefeed
+          ; json
+          ; #\Return #\Linefeed
+          ; #\Return #\Linefeed)
+  ; (finish-output stream))
 
 
 
-(defun handle-mcp-sse (stream body)
-  (when *debug* (format t "~&[DEBUG] handle-mcp-sse called~%"))
-  (when (and body (plusp (length body)))
-    (when *debug* (format t "~&[DEBUG] SSE calling handle-mcp~%"))
-    (let ((result (handle-mcp body)))
-      (when *debug* (format t "~&[DEBUG] SSE result: ~a~%" result))
-      (cond
-        (result
-         ;; Check if this is a load response (has "success" field)
-         (if (search "\"success\"" result)
-             ;; For load, use the working http-response function
-             (let ((response (http-response result)))
-               (format stream "~a" response)
-               (finish-output stream)
-               (force-output stream)
-               (close stream))
-             ;; For other MCP methods, use SSE with keep-alive
-             (send-json-response stream result)))
-        (t
-         (when *debug* (format t "~&[DEBUG] Sending 204~%"))
-         (format stream "HTTP/1.1 204 No Content~c~cConnection: keep-alive~c~c~c~c"
-                 #\Return #\Linefeed
-                 #\Return #\Linefeed
-                 #\Return #\Linefeed)
-         (finish-output stream))))))
+; (defun handle-mcp-sse (stream body)
+  ; (when *debug* (format t "~&[DEBUG] handle-mcp-sse called~%"))
+  ; (when (and body (plusp (length body)))
+    ; (when *debug* (format t "~&[DEBUG] SSE calling handle-mcp~%"))
+    ; (let ((result (handle-mcp body)))
+      ; (when *debug* (format t "~&[DEBUG] SSE result: ~a~%" result))
+      ; (cond
+        ; (result
+         ; Check if this is a load response (has "success" field)
+         ; (if (search "\"success\"" result)
+             ; For load, use the working http-response function
+             ; (let ((response (http-response result)))
+               ; (format stream "~a" response)
+               ; (finish-output stream)
+               ; (force-output stream)
+               ; (close stream))
+             ; For other MCP methods, use SSE with keep-alive
+             ; (send-json-response stream result)))
+        ; (t
+         ; (when *debug* (format t "~&[DEBUG] Sending 204~%"))
+         ; (format stream "HTTP/1.1 204 No Content~c~cConnection: keep-alive~c~c~c~c"
+                 ; #\Return #\Linefeed
+                 ; #\Return #\Linefeed
+                 ; #\Return #\Linefeed)
+         ; (finish-output stream))))))
          
 ;;; Server loop
 (defun server-loop ()
