@@ -62,17 +62,39 @@
     (write-char #\} out)))
 
 ;;; HTTP response helper
+; (defun http-response (content &optional (status 200))
+  ; (let ((body (if (stringp content) content (princ-to-string content))))
+    ; (format nil "HTTP/1.1 ~d OK~c~cContent-Type: application/json~c~cContent-Length: ~d~c~cConnection: close~c~c~c~c~a"
+      ; status
+      ; #\Return #\Linefeed
+      ; #\Return #\Linefeed
+      ; (length body)
+      ; #\Return #\Linefeed
+      ; #\Return #\Linefeed #\Return #\Linefeed
+      ; body)))
+      
+(defun http-status-text (code)
+  (case code
+    (200 "OK")
+    (204 "No Content")
+    (400 "Bad Request")
+    (404 "Not Found")
+    (500 "Internal Server Error")
+    (t   "Unknown")))
+
 (defun http-response (content &optional (status 200))
   (let ((body (if (stringp content) content (princ-to-string content))))
-    (format nil "HTTP/1.1 ~d OK~c~cContent-Type: application/json~c~cContent-Length: ~d~c~cConnection: close~c~c~c~c~a"
-      status
-      #\Return #\Linefeed
-      #\Return #\Linefeed
-      (length body)
-      #\Return #\Linefeed
-      #\Return #\Linefeed #\Return #\Linefeed
-      body)))
-
+    (format nil "HTTP/1.1 ~d ~a~c~cContent-Type: application/json~c~cContent-Length: ~d~c~cConnection: close~c~c~c~c~a"
+            status
+            (http-status-text status)
+            #\Return #\Linefeed
+            #\Return #\Linefeed
+            (length body)
+            #\Return #\Linefeed
+            #\Return #\Linefeed #\Return #\Linefeed
+            body)))
+            
+            
 ;;; Maxima evaluation
 (defun last-char (string)
   (char string (1- (length string))))
@@ -518,47 +540,7 @@
                  (t (json-object "error" "Unknown method")))))
          (format nil "{\"jsonrpc\":\"2.0\",\"id\":~a,\"result\":~a}"
                  (or id "null") result))))))
-                 
-;; JSON response
-; (defun send-json-response (stream json)
-  ; (format stream "HTTP/1.1 200 OK~c~cContent-Type: text/event-stream~c~cCache-Control: no-cache~c~cConnection: keep-alive~c~c~c~cdata: ~a~c~c~c~c"
-          ; #\Return #\Linefeed
-          ; #\Return #\Linefeed
-          ; #\Return #\Linefeed
-          ; #\Return #\Linefeed
-          ; #\Return #\Linefeed
-          ; json
-          ; #\Return #\Linefeed
-          ; #\Return #\Linefeed)
-  ; (finish-output stream))
 
-
-
-; (defun handle-mcp-sse (stream body)
-  ; (when *debug* (format t "~&[DEBUG] handle-mcp-sse called~%"))
-  ; (when (and body (plusp (length body)))
-    ; (when *debug* (format t "~&[DEBUG] SSE calling handle-mcp~%"))
-    ; (let ((result (handle-mcp body)))
-      ; (when *debug* (format t "~&[DEBUG] SSE result: ~a~%" result))
-      ; (cond
-        ; (result
-         ; Check if this is a load response (has "success" field)
-         ; (if (search "\"success\"" result)
-             ; For load, use the working http-response function
-             ; (let ((response (http-response result)))
-               ; (format stream "~a" response)
-               ; (finish-output stream)
-               ; (force-output stream)
-               ; (close stream))
-             ; For other MCP methods, use SSE with keep-alive
-             ; (send-json-response stream result)))
-        ; (t
-         ; (when *debug* (format t "~&[DEBUG] Sending 204~%"))
-         ; (format stream "HTTP/1.1 204 No Content~c~cConnection: keep-alive~c~c~c~c"
-                 ; #\Return #\Linefeed
-                 ; #\Return #\Linefeed
-                 ; #\Return #\Linefeed)
-         ; (finish-output stream))))))
          
 ;;; Server loop
 (defun server-loop ()
@@ -572,6 +554,7 @@
   (unwind-protect
     (loop while *server-running* do
       (let ((client (ignore-errors (socket-accept *server-socket*))))
+        (unless client (sleep 0.05))   ; <-- add this
         (when (and client *server-running*)   ; <-- both guards
           (when *debug* (format t "~&[DEBUG] Accepted client~%"))
           (sb-thread:make-thread
