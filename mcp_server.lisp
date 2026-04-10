@@ -159,6 +159,54 @@
        (not (search "quit(" expr :test #'char-equal))))                  
 
 
+; (defun run-maxima (expr)
+  ; (when *debug* (format t "~&[DEBUG] Maxima expr: ~a~%" expr))
+  ; (let* ((trimmed (string-trim '(#\Space #\Newline #\Return #\Tab #\; #\$) expr)))
+    ; (unless (safe-expr-p trimmed)
+      ; (when *debug* (format t "~&[DEBUG] Blocked expr: ~a~%" trimmed))
+      ; (return-from run-maxima "Error: expression blocked by security policy"))
+    ; (let ((input (format nil "~a$" trimmed)))
+      ; (when *debug* (format t "~&[DEBUG] Input to mread: ~a~%" input))
+      ; (handler-case
+          ; (with-input-from-string (in input)
+            ; (let* ((maxima::$display2d nil)
+                   ; (evaled (maxima::meval (maxima::mread in)))
+                   ; (result (with-output-to-string (out)
+                             ; (maxima::mgrind evaled out))))
+              ; (string-trim '(#\Space #\Newline #\Return #\Tab) result)))
+        ; (error (e)
+          ; (when *debug* (format t "~&[DEBUG] Maxima error: ~a~%" e))
+          ; (format nil "Maxima error: ~a" e))))))
+
+(defun normalize-maxima-error (msg)
+  (let ((s (string-trim '(#\Space #\Newline #\Return #\Tab)
+                        (princ-to-string msg))))
+    (if (or (search "MACSYMA-QUIT" s)
+            (search "attempt to THROW" s))
+        "Maxima evaluation aborted."
+        s)))
+
+(defun get-maxima-error-value ()
+  (handler-case
+      (let ((msg
+              (with-output-to-string (out)
+                (let ((maxima::$display2d nil))
+                  (maxima::mgrind
+                   (maxima::meval '$error)
+                   out)))))
+        (string-trim '(#\Space #\Newline #\Return #\Tab) msg))
+    (error ()
+      nil)))
+
+(defun get-maxima-error-message ()
+  (handler-case
+      (with-output-to-string (out)
+        (let ((*standard-output* out)
+              (maxima::$display2d nil))
+          (maxima::meval '(maxima::$errormsg))))
+    (error ()
+      nil)))
+      
 (defun run-maxima (expr)
   (when *debug* (format t "~&[DEBUG] Maxima expr: ~a~%" expr))
   (let* ((trimmed (string-trim '(#\Space #\Newline #\Return #\Tab #\; #\$) expr)))
@@ -175,9 +223,37 @@
                              (maxima::mgrind evaled out))))
               (string-trim '(#\Space #\Newline #\Return #\Tab) result)))
         (error (e)
-          (when *debug* (format t "~&[DEBUG] Maxima error: ~a~%" e))
-          (format nil "Maxima error: ~a" e))))))
-          
+          (let ((maxima-msg (get-maxima-error-message)))
+            (when *debug*
+              (format t "~&[DEBUG] Lisp error: ~a~%" e)
+              (format t "~&[DEBUG] Maxima msg: ~a~%" maxima-msg))
+            (if (and maxima-msg (> (length maxima-msg) 0))
+                maxima-msg
+                (normalize-maxima-error e))))))))
+
+
+ 
+(defun get-maxima-error-message ()
+  (handler-case
+      (let* ((raw
+               (with-output-to-string (out)
+                 (let ((*standard-output* out)
+                       (maxima::$display2d nil))
+                   (maxima::meval '((maxima::$errormsg))))))
+             (msg (string-trim '(#\Space #\Newline #\Return #\Tab) raw)))
+        (dolist (junk '(" -- an error. To debug this try: debugmode(true);"
+                        "-- an error. To debug this try: debugmode(true);"
+                        "To debug this try: debugmode(true);"))
+          (let ((pos (search junk msg :test #'char-equal)))
+            (when pos
+              (setf msg (string-trim '(#\Space #\Newline #\Return #\Tab)
+                                     (subseq msg 0 pos))))))
+        msg)
+    (error ()
+      nil)))
+
+ 
+              
 ;; Simple JSON field extraction (for demo purposes) 
 (defun extract-json-field (body field-name)
   (when *debug* (format t "~&[DEBUG] Extracting ~a from: ~a~%" field-name body))
