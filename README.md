@@ -20,7 +20,7 @@ Features
 - Endpoints: /ping, /health, /tool-call, /mcp.
 
 
-**Starting w/o no wraper**
+**Starting w/o wrapper**
 ```
 load("mcp_server.lisp");
 
