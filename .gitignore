@@ -33,6 +33,7 @@ $RECYCLE.BIN/
 
 *.log
 *.synctex.gz
+*.aux
 
 # Files that might appear on external disk
 .Spotlight-V100
