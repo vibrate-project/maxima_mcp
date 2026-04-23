@@ -11,12 +11,15 @@
 
 (defpackage :maxima-mcp
   (:use :cl :sb-bsd-sockets)
-  (:export :start-server :stop-server :server-running-p :server-port :*server-running* :*debug*  ))
+  (:export :start-server :stop-server :server-running-p :server-port :server-version :*server-running* :*debug*  ))
 
 (in-package :maxima-mcp)
 (defparameter *debug* t)
 (defparameter *local* t)
 (defparameter *version* "1.2")
+
+(defvar *request-id* "null"
+  "Current JSON-RPC request id. Dynamically rebound per client thread in handle-client.")
 
 (format t "~&[DEBUG] === maxima-mcp-server.lisp loading ===~%")
 
@@ -47,7 +50,9 @@
                (t            (write-char ch out))))))
                
 (defun json-string (s) (format nil "\"~a\"" (json-escape s)))
+
 (defun json-array (items) (format nil "[~{~a~^,~}]" (mapcar #'json-string items)))
+
 (defun json-object (&rest pairs)
   (with-output-to-string (out)
     (write-char #\{ out)
@@ -135,7 +140,7 @@
                      (extract-json-field body "name")       ; direct HTTP fallback
                      (extract-json-field body "function")   ; legacy fallback
                      ""))
-         (id     (extract-json-id body)))
+         (id     *request-id* ))
     (when *debug* (format t "~&[DEBUG] functsource fname: ~a id: ~a~%" fname id))
     (if (plusp (length (string-trim " " fname)))
         (let* ((raw     (run-maxima (format nil "errcatch(fundef(~a))" fname)))
@@ -185,7 +190,7 @@
   (let* ((topic (or (extract-tool-argument body "topic")
                     (extract-json-field body "topic")
                     ""))
-         (id (extract-json-id body)))
+         (id *request-id*  ))
     (when *debug* (format t "~&[DEBUG] help topic: ~a id: ~a~%" topic id))
     (if (plusp (length (string-trim " " topic)))
         (let* ((result  (run-maxima-describe (string-trim " " topic)))
@@ -201,9 +206,9 @@
 
 
 ;;; List all user-defined Maxima functions (values of the `functions` variable)
-(defun handle-listfunctions (body)
+(defun handle-listfunctions ()
   (when *debug* (format t "~&[DEBUG] handle-listfunctions~%"))
-  (let ((id (extract-json-id body)))
+  (let ((id *request-id* ))
     (let* ((raw    (run-maxima "functions"))
            (result (clean-maxima-result raw))
            (escaped (json-escape result)))
@@ -264,7 +269,6 @@
                 maxima-msg
                 (normalize-maxima-error e))))))))
 
-
  
 (defun get-maxima-error-message ()
   (handler-case
@@ -285,7 +289,6 @@
     (error ()
       nil)))
 
- 
               
 ;; Simple JSON field extraction (for demo purposes) 
 (defun extract-json-field (body field-name)
@@ -360,7 +363,7 @@
   (when *debug* (format t "~&[DEBUG] handle-tool-call: ~a~%" body))
   (let* ((tool-name (extract-json-field body "name"))
          (expr (extract-json-field body "expression"))
-         (id (extract-json-id body)))
+         (id *request-id* ))
     (when *debug* (format t "~&[DEBUG] tool: ~a expr: ~a id: ~a~%" tool-name expr id))
     (if (and expr (plusp (length (string-trim " " expr))))
         (let* ((clean-expr (string-trim " " expr))
@@ -446,7 +449,8 @@
             (unless request-line (return))
             (multiple-value-bind (method path) (parse-request-line request-line)
               (when *debug* (format t "~&[DEBUG] Method: ~a Path: ~a~%" method path))
-              (let ((headers '()) content-length body)
+              (let ((*request-id* "null")   ; ← dynamic rebind — thread-local
+              (headers '()) content-length body)
                 (when *debug* (format t "~&[DEBUG] Reading headers~%"))
                 (loop for line = (read-line stream nil nil)
                       do (when *debug* (format t "~&[DEBUG] Header line: ~s~%" line))
@@ -490,7 +494,7 @@
                              ((and method (string= method "POST") (string= path "/load"))      (handle-load body))
                              ((and method (string= method "POST") (string= path "/functsource")) (handle-functsource body))
                              ((and method (string= method "POST") (string= path "/help")) (handle-help body))
-                             ((and method (string= method "POST") (string= path "/listfunctions")) (handle-listfunctions body))
+                             ((and method (string= method "POST") (string= path "/listfunctions")) (handle-listfunctions ))
                              
                              (t (json-object "error" "Not found")))))
 
@@ -572,6 +576,7 @@
   (when *debug* (format t "~&[DEBUG] /mcp body: ~a~%" body))
   (let ((method (extract-json-field body "method"))
         (id     (extract-json-id body)))
+    (setf *request-id* (or id "null"))    ; ← writes into the thread-local binding
     (cond
       ;; Notifications — no response needed
       ((search "notifications/" method)
@@ -610,7 +615,7 @@
           ;; maxima_listfunctions
           ((or (search "listfunctions" tool-name)
                (search "maxima_listfunctions" tool-name))
-           (handle-listfunctions body))        
+           (handle-listfunctions ))        
            
            ;; unknown tool
            (t
@@ -693,5 +698,4 @@
 (defun debug-enabled-p () *debug*)
 (defun server-running-p () *server-running*)
 (defun server-port () *port*)
-
 (defun server-version () *version*)
