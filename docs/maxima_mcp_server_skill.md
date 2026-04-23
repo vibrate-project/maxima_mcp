@@ -4,7 +4,8 @@
 **Author:** Dimiter Prodanov, IICT-BAS  
 **Runtime:** Maxima (SBCL embedded)  
 **Protocol:** JSON-RPC 2.0 over HTTP/1.1  
-**Default port:** `8000` (localhost only when `*local* t`)
+**Default port:** `8000` (localhost only when `*local* t`)  
+**Version:** 1.2
 
 ---
 
@@ -35,6 +36,7 @@ Exported symbols from the `maxima-mcp` package:
 | `stop-server` | function | Stop listener, close socket |
 | `server-running-p` | function | Returns `*server-running*` |
 | `server-port` | function | Returns `*port*` |
+| `server-version` | function | Returns `*version*` |
 | `*server-running*` | parameter | Boolean — server state |
 | `*debug*` | parameter | Boolean — verbose logging to stdout |
 
@@ -47,7 +49,33 @@ Exported symbols from the `maxima-mcp` package:
 | `*port*` | `8000` | TCP listen port |
 | `*local*` | `t` | `t` = bind `127.0.0.1` only; `nil` = bind `0.0.0.0` |
 | `*debug*` | `t` | Print `[DEBUG]` trace lines to stdout |
+| `*version*` | `"1.2"` | Server version string |
 | `*server-running*` | `nil` | Set to `t` by `start-server` |
+| `*request-id*` | `"null"` | Current JSON-RPC request id — dynamic, thread-local |
+
+---
+
+## Thread Safety — `*request-id*`
+
+`*request-id*` is declared with `defvar` (dynamic/special variable). In `handle-client`,
+it is rebound with `let` at the start of each request:
+
+```lisp
+(let ((*request-id* "null")   ; dynamic rebind — thread-local per request
+      (headers '()) content-length body)
+  ...)
+```
+
+`handle-mcp` then sets it once after extracting the id from the envelope:
+
+```lisp
+(setf *request-id* (or id "null"))
+```
+
+All handlers read `*request-id*` directly — no re-parsing of the body. Because SBCL's
+dynamic binding stack is per-thread, concurrent requests never interfere.
+
+**Rule:** Never use `extract-json-id` inside a handler. Always read `*request-id*`.
 
 ---
 
@@ -62,6 +90,7 @@ Exported symbols from the `maxima-mcp` package:
 | POST | `/load` | `handle-load` | Load a Maxima package (legacy) |
 | POST | `/functsource` | `handle-functsource` | Get user-function source (legacy) |
 | POST | `/help` | `handle-help` | Maxima `? topic` documentation lookup |
+| POST | `/listfunctions` | `handle-listfunctions` | List user-defined functions |
 
 The `/mcp` endpoint handles all standard MCP traffic. The other POST endpoints are legacy
 direct-HTTP paths that bypass JSON-RPC method dispatch.
@@ -80,10 +109,7 @@ Evaluate any Maxima CAS expression. Returns the result as a string.
 {
   "jsonrpc": "2.0", "id": 1,
   "method": "tools/call",
-  "params": {
-    "name": "maxima_compute",
-    "arguments": {"expression": "integrate(sin(x),x)"}
-  }
+  "params": {"name": "maxima_compute", "arguments": {"expression": "integrate(sin(x),x)"}}
 }
 ```
 
@@ -97,10 +123,7 @@ Load a Maxima package by filename.
 {
   "jsonrpc": "2.0", "id": 2,
   "method": "tools/call",
-  "params": {
-    "name": "maxima_load",
-    "arguments": {"package": "draw"}
-  }
+  "params": {"name": "maxima_load", "arguments": {"package": "draw"}}
 }
 ```
 
@@ -113,10 +136,7 @@ Returns an error string if the function is not defined.
 {
   "jsonrpc": "2.0", "id": 3,
   "method": "tools/call",
-  "params": {
-    "name": "maxima_functsource",
-    "arguments": {"name": "myfunction"}
-  }
+  "params": {"name": "maxima_functsource", "arguments": {"name": "myfunction"}}
 }
 ```
 
@@ -129,29 +149,38 @@ Equivalent to `? topic` at the Maxima prompt.
 {
   "jsonrpc": "2.0", "id": 4,
   "method": "tools/call",
-  "params": {
-    "name": "maxima_help",
-    "arguments": {"topic": "erf"}
-  }
+  "params": {"name": "maxima_help", "arguments": {"topic": "erf"}}
 }
 ```
 
-**Implementation note:** The topic is passed to `$describe` as a plain interned Maxima symbol
-via `(intern (string-upcase topic) :maxima)`. Do **not** use `mread` here — it wraps the symbol
-in a `nodisplayinput(false, …)` display form that `$describe` cannot match.
-The `$describe` output is captured by redirecting `*standard-output*` inside
-`with-output-to-string`, identical to the pattern used in `get-maxima-error-message`.
+**Implementation note:** The topic is interned as a Maxima symbol via
+`(intern (string-upcase topic) :maxima)`. Do **not** use `mread` — it wraps the
+symbol in `nodisplayinput(false, …)` which `$describe` cannot match.
+
+### `maxima_listfunctions`
+
+Return the value of Maxima's `functions` variable — the list of all user-defined functions.
+Takes no arguments.
+
+```json
+{
+  "jsonrpc": "2.0", "id": 5,
+  "method": "tools/call",
+  "params": {"name": "maxima_listfunctions", "arguments": {}}
+}
+```
+
+**Implementation note:** `handle-listfunctions` takes no parameters. The HTTP dispatcher
+and MCP dispatcher both call `(handle-listfunctions)` with no arguments.
 
 ---
 
 ## Standard MCP Methods
 
-These are handled by `handle-mcp` under the `(t ...)` branch:
-
 | Method | Response |
 |---|---|
 | `initialize` | Protocol version `2025-06-18`, server info, capabilities |
-| `tools/list` | Array of all four tool descriptors with `inputSchema` |
+| `tools/list` | Array of all five tool descriptors with `inputSchema` |
 | `ping` | `{"pong":true}` |
 | `notifications/*` | No response (returns `nil` → HTTP 202 Accepted) |
 
@@ -163,12 +192,14 @@ These are handled by `handle-mcp` under the `(t ...)` branch:
 
 ```
 TCP accept → handle-client
-  → parse HTTP headers + body
-    → route on (method, path)
-      → /mcp → handle-mcp
-                 → tools/call → dispatch on tool-name
-                 → initialize / tools/list / ping → inline result
-                 → notifications/* → nil (202)
+  → let ((*request-id* "null") ...)   ; thread-local rebind
+    → parse HTTP headers + body
+      → route on (method, path)
+        → /mcp → handle-mcp
+                   → (setf *request-id* ...)   ; set once
+                   → tools/call → dispatch on tool-name
+                   → initialize / tools/list / ping → inline result
+                   → notifications/* → nil (202)
 ```
 
 ### Key Internal Functions
@@ -183,7 +214,7 @@ TCP accept → handle-client
 | `safe-expr-p` | Block expressions containing `:lisp` or `quit(` |
 | `extract-json-field` | Hand-rolled JSON field extraction — handles quoted/unquoted keys and values |
 | `extract-tool-argument` | Extract from `"arguments":{"key":"value"}` (MCP tools/call path) |
-| `extract-json-id` | Extract top-level `"id"` value from JSON-RPC body |
+| `extract-json-id` | Extract top-level `"id"` from JSON-RPC body — anchored before `params`/`method` |
 | `find-unquoted-end` | Depth-aware JSON value terminator — handles nested `()[]{}` |
 | `json-escape` | RFC 8259 compliant string escaping using `char-code` comparisons |
 
@@ -201,26 +232,17 @@ undefined functions without triggering a Lisp condition.
 
 ## Adding a New Tool
 
-1. **Write the handler:** `(defun handle-newtool (body) …)`  
-   — Extract arguments with `extract-tool-argument` (MCP path) or `extract-json-field` (HTTP path)  
-   — Extract id with `extract-json-id`  
-   — Return a JSON-RPC result string
+### With arguments
+1. Write `(defun handle-newtool (body) (let* ((arg (extract-tool-argument body "arg")) (id *request-id*)) ...))`
+2. Add branch in `handle-mcp` tools/call dispatch
+3. Add HTTP route: `((... (string= path "/newtool")) (handle-newtool body))`
+4. Add entry to `tools/list` JSON string
+5. Add `"/newtool"` to `handle-root` endpoints list
 
-2. **Register in `tools/call` dispatch** (inside `handle-mcp`, `(search "tools/call" method)` branch):
-   ```lisp
-   ((or (search "newtool" tool-name)
-        (search "maxima_newtool" tool-name))
-    (handle-newtool body))
-   ```
-
-3. **Add HTTP route** (inside `handle-client`, the `response` cond):
-   ```lisp
-   ((and method (string= method "POST") (string= path "/newtool")) (handle-newtool body))
-   ```
-
-4. **Add to `tools/list`** — append a new entry to the JSON string in the `(search "tools/list" method)` branch.
-
-5. **Expose in `handle-root`** — add `"/newtool"` to the endpoints list.
+### Without arguments (like `handle-listfunctions`)
+1. Write `(defun handle-newtool () (let* ((id *request-id*)) ...))`  — no `body` parameter
+2. Call sites use `(handle-newtool)` with no arguments in both dispatchers
+3. No `(declare (ignore body))` needed — cleaner signature
 
 ---
 
@@ -228,12 +250,14 @@ undefined functions without triggering a Lisp condition.
 
 | Issue | Detail |
 |---|---|
-| `"id": null` in responses | `extract-json-id` searches the raw body string; if `"id"` appears in a nested field before the top-level one, it may be missed. Always place `"id"` before `"params"` in requests. |
-| `mread` wraps symbols | Never pass a topic or symbol name through `mread` before calling Maxima introspection functions (`$describe`, `$fundef`). Use `intern` instead. |
-| `get-maxima-error-message` defined twice | The file contains two definitions of `get-maxima-error-message` — the second (with `errormsg` junk-stripping) overrides the first. The first definition is dead code. |
-| No `?? topic` (inexact match) | `$describe` called with a second argument `maxima::$false` performs inexact/apropos search — not yet exposed as a tool. |
-| Body size cap | Request bodies are capped at 100,000 bytes; excess bytes are drained. |
-| Single-threaded JSON parsing | `extract-json-field` is a hand-rolled linear search, not a proper parser. Malformed or adversarial JSON may cause incorrect field extraction. |
+| `mread` wraps symbols | Never pass a topic/symbol through `mread` before calling `$describe` or `fundef`. Use `intern` instead. |
+| `get-maxima-error-message` defined twice | File contains two definitions — the second (with junk-stripping) overrides the first. First is dead code. |
+| No `?? topic` inexact match | `$describe` with second arg `maxima::$false` does apropos search — not yet exposed as a tool. |
+| No SSE streaming | All responses are request/response. SSE would require `text/event-stream`, chunked transfer, and non-blocking `meval`. Not yet implemented. |
+| No run-maxima timeout | Long-running `meval` calls block the handler thread indefinitely. No timeout/kill mechanism exists yet. |
+| Body size cap | Request bodies capped at 100,000 bytes; excess drained. |
+| Hand-rolled JSON parser | `extract-json-field` is a linear string search. Malformed or adversarial JSON may extract wrong fields. |
+| Windows curl strips quotes | `curl.exe -d '{"id":1}'` on Windows CMD strips single quotes, sending `{id:1}`. Use escaped double quotes: `-d "{"id":1}"`. `extract-json-id` handles both forms. |
 
 ---
 
@@ -244,27 +268,35 @@ undefined functions without triggering a Lisp condition.
 curl -s http://localhost:8000/health
 
 # List tools
-curl -s -X POST http://localhost:8000/mcp \
-  -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+curl -s -X POST http://localhost:8000/mcp ^
+  -H "Content-Type: application/json" ^
+  -d "{"jsonrpc":"2.0","id":1,"method":"tools/list"}"
 
 # Evaluate expression
-curl -s -X POST http://localhost:8000/mcp \
-  -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"maxima_compute","arguments":{"expression":"diff(sin(x),x)"}}}'
+curl -s -X POST http://localhost:8000/mcp ^
+  -H "Content-Type: application/json" ^
+  -d "{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"maxima_compute","arguments":{"expression":"diff(sin(x),x)"}}}"
 
 # Help lookup
-curl -s -X POST http://localhost:8000/mcp \
-  -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"maxima_help","arguments":{"topic":"integrate"}}}'
+curl -s -X POST http://localhost:8000/mcp ^
+  -H "Content-Type: application/json" ^
+  -d "{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"maxima_help","arguments":{"topic":"integrate"}}}"
 
 # Load a package
-curl -s -X POST http://localhost:8000/mcp \
-  -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"maxima_load","arguments":{"package":"draw"}}}'
+curl -s -X POST http://localhost:8000/mcp ^
+  -H "Content-Type: application/json" ^
+  -d "{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"maxima_load","arguments":{"package":"draw"}}}"
 
 # Get function source
-curl -s -X POST http://localhost:8000/mcp \
-  -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"maxima_functsource","arguments":{"name":"myf"}}}'
+curl -s -X POST http://localhost:8000/mcp ^
+  -H "Content-Type: application/json" ^
+  -d "{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"maxima_functsource","arguments":{"name":"myf"}}}"
+
+# List user-defined functions
+curl -s -X POST http://localhost:8000/mcp ^
+  -H "Content-Type: application/json" ^
+  -d "{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"maxima_listfunctions","arguments":{}}}"
 ```
+
+> **Windows note:** Use `^` for line continuation in CMD, or run as a single line.
+> Always use escaped double-quotes with `curl.exe -d` — single quotes are stripped by CMD.
