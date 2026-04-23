@@ -1,218 +1,202 @@
-# Maxima MCP Server — Use Skill
+# Maxima MCP Server — Use Skill (Small Model Edition)
 
-You have access to a running Maxima CAS (Computer Algebra System) server via HTTP on
-`http://localhost:8000`. Use it to perform symbolic mathematics, retrieve documentation,
-and inspect the user's Maxima session. Always prefer the MCP tools/call interface.
-
----
-
-## How to Call the Server
-
-All requests go to `POST http://localhost:8000/mcp` with `Content-Type: application/json`.
-
-Template:
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 1,
-  "method": "tools/call",
-  "params": {
-    "name": "<tool_name>",
-    "arguments": { "<arg>": "<value>" }
-  }
-}
-```
+You have access to a Maxima CAS (Computer Algebra System) via HTTP on `http://localhost:8000`.
+Use it for ALL symbolic mathematics. Never compute math yourself — always call a tool.
 
 ---
 
-## Available Tools
+## Tools Available
 
-### 1. `maxima_compute` — Evaluate a Maxima expression
-
-Use for: symbolic computation, simplification, solving, integration, differentiation,
-matrix algebra, limits, series, ODE solving, plotting commands.
-
-| Argument | Type | Required |
+| Tool | When to use | Required argument |
 |---|---|---|
-| `expression` | string | yes |
-
-**Examples:**
-
-```json
-{"name":"maxima_compute","arguments":{"expression":"diff(x^3*sin(x), x)"}}
-```
-→ `x^3*cos(x)+3*x^2*sin(x)`
-
-```json
-{"name":"maxima_compute","arguments":{"expression":"integrate(exp(-x^2), x, 0, inf)"}}
-```
-→ `sqrt(%pi)/2`
-
-```json
-{"name":"maxima_compute","arguments":{"expression":"solve([x^2+y=4, x+y=2], [x,y])"}}
-```
-→ `[[x=-1,y=3],[x=2,y=0]]`
-
-```json
-{"name":"maxima_compute","arguments":{"expression":"taylor(sin(x), x, 0, 7)"}}
-```
-→ `x-x^3/6+x^5/120-x^7/5040`
-
-```json
-{"name":"maxima_compute","arguments":{"expression":"eigenvalues(matrix([1,2],[3,4]))"}}
-```
-→ eigenvalues and multiplicities
-
-```json
-{"name":"maxima_compute","arguments":{"expression":"ode2('diff(y,x)+y=x, y, x)"}}
-```
-→ general solution of the ODE
-
-**Security:** The server blocks expressions containing `:lisp` or `quit(`.
+| `maxima_compute` | Evaluate, simplify, solve, differentiate, integrate, ODE | `expression` (string) |
+| `maxima_load` | Before using any package function | `package` (string) |
+| `maxima_help` | Look up syntax before using an unfamiliar function | `topic` (string) |
+| `maxima_functsource` | Inspect a user-defined function | `name` (string) |
+| `maxima_listfunctions` | List all user-defined functions in session | *(none)* |
 
 ---
 
-### 2. `maxima_load` — Load a Maxima package
+## Decision Rules
 
-Use for: enabling extra functionality before calling `maxima_compute` with package functions.
+Follow these rules exactly:
 
-| Argument | Type | Required |
+- IF user asks to compute, simplify, solve, differentiate, integrate, or expand → `maxima_compute`
+- IF you are unsure of a function's argument order → `maxima_help` FIRST, then `maxima_compute`
+- IF expression uses a package function (see list below) → `maxima_load` FIRST, then `maxima_compute`
+- IF user asks what a function does → `maxima_help`
+- IF user references "my function" or a named function → `maxima_listfunctions` then `maxima_functsource`
+- NEVER invent Maxima function names — use only names from the cheatsheet below
+
+---
+
+## Argument Names — Exact Spelling
+
+Always use these exact argument keys:
+
+```json
+{"name":"maxima_compute",     "arguments":{"expression":"..."}}
+{"name":"maxima_load",        "arguments":{"package":"..."}}
+{"name":"maxima_help",        "arguments":{"topic":"..."}}
+{"name":"maxima_functsource", "arguments":{"name":"..."}}
+{"name":"maxima_listfunctions","arguments":{}}
+```
+
+---
+
+## Maxima Function Cheatsheet — Correct Names
+
+Small models frequently hallucinate function names. Use ONLY these:
+
+### Calculus
+| Operation | Correct call | Common wrong names |
 |---|---|---|
-| `package` | string | yes |
+| Differentiate | `diff(f, x)` or `diff(f, x, n)` | `derivative`, `deriv` |
+| Indefinite integral | `integrate(f, x)` | `integral`, `antiderivative` |
+| Definite integral | `integrate(f, x, a, b)` | `integrate(f, a, b)` |
+| Limit | `limit(f, x, a)` | `lim` |
+| Taylor series | `taylor(f, x, x0, n)` | `taylor_series`, `series` |
 
-**Examples:**
-
-```json
-{"name":"maxima_load","arguments":{"package":"draw"}}
-```
-→ enables `draw2d`, `draw3d`
-
-```json
-{"name":"maxima_load","arguments":{"package":"distrib"}}
-```
-→ enables probability distributions (`mean`, `variance`, `pdf_normal`, etc.)
-
-```json
-{"name":"maxima_load","arguments":{"package":"linalg"}}
-```
-→ enables advanced linear algebra functions
-
-```json
-{"name":"maxima_load","arguments":{"package":"lapack"}}
-```
-→ enables LAPACK numerical routines
-
----
-
-### 3. `maxima_functsource` — Get source of a user-defined function
-
-Use for: inspecting what a function does before calling it; debugging user code.
-
-| Argument | Type | Required |
+### Transforms
+| Operation | Correct call | Notes |
 |---|---|---|
-| `name` | string | yes |
+| Laplace transform | `laplace(f, t, s)` | 3rd arg is frequency var, NOT a number |
+| Inverse Laplace | `ilt(F, s, t)` | NOT `ilaplace` or `inverse_laplace` |
+| Fourier (load first) | `load("fourie")` then `fourier(f, x, w)` | NOT `fourier_transform` |
 
-**Examples:**
-
-```json
-{"name":"maxima_functsource","arguments":{"name":"testf"}}
-```
-→ returns `testf(x):=x^2+1` (or error if not defined)
-
-```json
-{"name":"maxima_functsource","arguments":{"name":"myintegrand"}}
-```
-→ returns the function body as defined by the user
-
----
-
-### 4. `maxima_help` — Get documentation for a Maxima function or topic
-
-Use for: looking up syntax, arguments, return values, and references before using a function.
-Equivalent to `? topic` at the Maxima prompt.
-
-| Argument | Type | Required |
+### Algebra
+| Operation | Correct call | Common wrong names |
 |---|---|---|
-| `topic` | string | yes |
+| Solve equation | `solve(eq, x)` or `solve([eqs],[vars])` | `solve_for` |
+| Factor | `factor(f)` | `factorize`, `factorise` |
+| Expand | `expand(f)` | `expand_expr` |
+| Partial fractions | `partfrac(f, x)` | `partial_fractions`, `apart` |
+| Simplify (rational) | `ratsimp(f)` | `simplify`, `simplify_full` |
+| Simplify (radical) | `radcan(f)` | `radsimp` |
+| Numerical value | `float(f)` | `eval`, `N(f)` |
 
-**Examples:**
+### Linear Algebra
+| Operation | Correct call | Common wrong names |
+|---|---|---|
+| Eigenvalues | `eigenvalues(M)` | `eig`, `eigvals`, `eigs` |
+| Eigenvectors | `eigenvectors(M)` | `eigvecs` |
+| Matrix inverse | `invert(M)` | `inv(M)`, `M^-1` |
+| Determinant | `determinant(M)` | `det` |
 
-```json
-{"name":"maxima_help","arguments":{"topic":"integrate"}}
-```
-→ full documentation for `integrate` including definite/indefinite forms
+### ODEs
+| Operation | Correct call | Common wrong names |
+|---|---|---|
+| First/second order ODE | `ode2(eq, y, x)` | `dsolve`, `solve_ode` |
+| With initial conditions | `ic1(soln, x=x0, y=y0)` | |
+| With boundary conditions | `bc2(soln, x=x0, y=y0, x=x1, y=y1)` | |
 
-```json
-{"name":"maxima_help","arguments":{"topic":"erf"}}
-```
-→ definition of the error function, formula, references to A&S and DLMF
-
-```json
-{"name":"maxima_help","arguments":{"topic":"solve"}}
-```
-→ syntax, flags like `solveradcan`, `solvefactors`, examples
-
-```json
-{"name":"maxima_help","arguments":{"topic":"matrix"}}
-```
-→ matrix construction syntax and related functions
-
-```json
-{"name":"maxima_help","arguments":{"topic":"taylor"}}
-```
-→ Taylor/Laurent series expansion documentation
+### Constants
+| Symbol | Maxima | Wrong |
+|---|---|---|
+| π | `%pi` | `pi`, `PI` |
+| e | `%e` | `e`, `E` |
+| i (imaginary) | `%i` | `i`, `1i` |
+| infinity | `inf` | `infinity`, `Inf` |
 
 ---
 
-### 5. `maxima_listfunctions` — List all user-defined functions
+## Package Functions — Always Load First
 
-Use for: discovering what functions are defined in the current session before calling
-`maxima_functsource` or `maxima_compute`.
+These require `maxima_load` before `maxima_compute`:
 
-No arguments required.
+| Function | Package |
+|---|---|
+| `draw2d`, `draw3d` | `draw` |
+| `pdf_normal`, `mean`, `variance` | `distrib` |
+| `laplace_matrix` | `linalg` |
+| `fourier` | `fourie` |
+| `dgeev` (numerical eigen) | `lapack` |
 
+---
+
+## Worked Examples
+
+### Example 1 — Laplace transform
+User: "Compute the Laplace transform of exp(-a*t)"
+
+```json
+{"name":"maxima_compute","arguments":{"expression":"laplace(exp(-a*t), t, s)"}}
+```
+Result: `1/(s+a)`
+
+**NOT:** `laplace_transform(exp(-a*t), t, s)` ← does not exist
+
+---
+
+### Example 2 — ODE with initial condition
+User: "Solve y' + 2y = 0, y(0)=3"
+
+Step 1:
+```json
+{"name":"maxima_compute","arguments":{"expression":"ode2('diff(y,x)+2*y=0, y, x)"}}
+```
+Step 2 (apply IC):
+```json
+{"name":"maxima_compute","arguments":{"expression":"ic1(%, x=0, y=3)"}}
+```
+
+---
+
+### Example 3 — Unknown function, check first
+User: "Use my_kernel function"
+
+Step 1:
 ```json
 {"name":"maxima_listfunctions","arguments":{}}
 ```
-→ returns e.g. `[testf(x),myode(y,x),kernel(t)]`
-→ returns `[]` if no user functions are defined
-
-**Workflow:** Call `maxima_listfunctions` first, then `maxima_functsource` on each name
-of interest to understand what is available in the session.
-
----
-
-## Decision Guide
-
-| User intent | Tool to use |
-|---|---|
-| Compute, simplify, solve, differentiate, integrate | `maxima_compute` |
-| Use a package function (draw, distrib, linalg…) | `maxima_load` first, then `maxima_compute` |
-| Look up how a built-in function works | `maxima_help` |
-| Inspect a user-defined function | `maxima_functsource` |
-| Discover what functions exist in the session | `maxima_listfunctions` |
-
----
-
-## Important Conventions
-
-- **Maxima syntax** uses `^` for exponentiation, `%pi`, `%e`, `%i` for constants,
-  `'diff(y,x)` for unevaluated derivatives, and `;` or `$` as terminators
-  (the server strips these automatically).
-- **Always call `maxima_help`** before using an unfamiliar function to verify argument order.
-- **Always call `maxima_load`** before using any package function — loading an already-loaded
-  package is harmless.
-- **Multi-step computations** — assign intermediate results with `:` e.g.
-  `A: matrix([1,2],[3,4])` then use `A` in subsequent calls.
-- **Results are strings** — parse them as Maxima output notation, not as JSON numbers or arrays.
-
----
-
-## Example Multi-Step Session
-
+Step 2:
+```json
+{"name":"maxima_functsource","arguments":{"name":"my_kernel"}}
 ```
-1. maxima_listfunctions          → discover session state
-2. maxima_help topic=ode2        → check syntax
-3. maxima_compute "ode2('diff(y,x,2)+y=sin(x), y, x)"   → solve ODE
-4. maxima_compute "ratsimp(%)"   → simplify result
+Step 3: use it in `maxima_compute` once you know its arguments.
+
+---
+
+### Example 4 — Package function
+User: "Plot sin(x)"
+
+Step 1:
+```json
+{"name":"maxima_load","arguments":{"package":"draw"}}
 ```
+Step 2:
+```json
+{"name":"maxima_compute","arguments":{"expression":"draw2d(explicit(sin(x),x,-5,5))"}}
+```
+
+---
+
+### Example 5 — Unsure of syntax
+User: "Apply Runge-Kutta to this ODE"
+
+Step 1:
+```json
+{"name":"maxima_help","arguments":{"topic":"rk"}}
+```
+Then use the correct syntax from the documentation.
+
+---
+
+## Maxima Syntax Reminders
+
+- Assignment: `a: 3` not `a = 3`
+- Equation: `x^2 = 1` (used inside `solve`)
+- Unevaluated derivative: `'diff(y, x)` (apostrophe suppresses evaluation)
+- End of expression: server strips `;` and `$` automatically — do not include them
+- Previous result: `%` refers to the last output
+
+---
+
+## Anti-Hallucination Checklist
+
+Before calling `maxima_compute`, verify:
+1. ☑ Function name is in the cheatsheet above
+2. ☑ Argument key is exactly `expression`
+3. ☑ Third argument of `laplace` is a variable name (e.g. `s`), not a number
+4. ☑ Package is loaded if the function requires one
+5. ☑ Constants use `%pi`, `%e`, `%i` — not `pi`, `e`, `i`
