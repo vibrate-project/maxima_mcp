@@ -21,6 +21,10 @@
 (defvar *request-id* "null"
   "Current JSON-RPC request id. Dynamically rebound per client thread in handle-client.")
 
+(defvar  *sse-streams* '()
+  "List of active SSE streams — closed gracefully by stop-server.")
+(defvar  *sse-lock* (sb-thread:make-mutex :name "sse-lock"))
+
 (format t "~&[DEBUG] === maxima-mcp-server.lisp loading ===~%")
 
 ;;; Configuration
@@ -452,10 +456,103 @@
               (subseq line (1+ space1) space2)))))
 
 ;;; Client handling
+; (defun handle-client (client-socket)
+  ; (when *debug* (format t "~&[DEBUG] New client~%"))
+  ; (let ((stream (socket-make-stream client-socket :input t :output t :element-type 'character :external-format :latin-1
+                ; :buffering :full)))
+    ; (unwind-protect
+      ; (handler-case
+        ; (loop
+          ; (let ((request-line (read-line stream nil nil)))
+            ; (unless request-line (return))
+            ; (multiple-value-bind (method path) (parse-request-line request-line)
+              ; (when *debug* (format t "~&[DEBUG] Method: ~a Path: ~a~%" method path))
+              ; (let ((*request-id* "null")   ; ← dynamic rebind — thread-local
+              ; (headers '()) content-length body)
+                ; (when *debug* (format t "~&[DEBUG] Reading headers~%"))
+                ; (loop for line = (read-line stream nil nil)
+                      ; do (when *debug* (format t "~&[DEBUG] Header line: ~s~%" line))
+                      ; while (and line (plusp (length (string-trim '(#\Space #\Tab #\Return #\Newline) line))))
+                      ; do (let* ((colon (position #\: line)))
+                           ; (when colon
+                             ; (let* ((header-name (string-upcase (subseq line 0 colon)))
+                                    ; (header-value (string-trim " " (subseq line (1+ colon)))))
+                               ; (push (cons header-name header-value) headers)
+                               ; (when *debug* (format t "~&[DEBUG] Header: ~a = ~a~%" header-name header-value))))))
+                ; (let ((raw-len (let ((header (assoc "CONTENT-LENGTH" headers :test #'string=)))
+                                 ; (if header
+                                     ; (or (parse-integer (cdr header) :junk-allowed t) 0)
+                                     ; 0))))
+                  ; (setf content-length (min raw-len 100000))
+                  ; (when (> raw-len 100000)
+                    ; (when *debug* (format t "~&[DEBUG] Body too large: ~d > 100000, capping~%" raw-len))
+                    ; (dotimes (_ (- raw-len 100000))
+                      ; (read-char stream nil nil)))
+                  ; (when *debug* (format t "~&[DEBUG] Effective Content-Length: ~d~%" content-length)))
+                ; (setf body (when (plusp content-length)
+                             ; (let ((b (make-string content-length)))
+                               ; (let ((read-bytes (read-sequence b stream)))
+                                 ; (when (< read-bytes content-length)
+                                   ; (when *debug* (format t "~&[DEBUG] Partial read: ~d/~d~%" read-bytes content-length)))
+                                 ; b))))
+                ; (when *debug*
+                  ; (format t "~&[DEBUG] Body: ~d bytes~%" (if body (length body) 0)))
+                ; (let ((response
+                       ; (cond ((and method (string= method "GET")  (string= path "/"))          (handle-root))
+                             ; ((and method (string= method "GET")  (string= path "/health"))    (handle-health))
+                             ; ((and method (string= method "GET") (string= path "/mcp"))
+                               ; (handle-mcp-sse stream)
+                               ; :sse)
+                             ; ((and method (string= method "POST") (string= path "/tool-call")) (handle-tool-call body))
+                             ; FIXED — consistent with all other routes
+                             ; ((and method (string= method "POST") (string= path "/mcp"))
+                             ; (let ((mcp-response (handle-mcp body)))
+                               ; (if mcp-response
+                                   ; mcp-response
+                                   ; :accepted)))
+
+    
+                             ; ((and method (string= method "POST") (string= path "/load"))      (handle-load body))
+                             ; ((and method (string= method "POST") (string= path "/functsource")) (handle-functsource body))
+                             ; ((and method (string= method "POST") (string= path "/help")) (handle-help body))
+                             ; ((and method (string= method "POST") (string= path "/listfunctions")) (handle-listfunctions ))
+                             
+                             ; (t (json-object "error" "Not found")))))
+
+                    ; (cond
+                      ; ((eq response :sse)      nil)           ; ← ADD this — stream owned by handle-mcp-sse
+                      ; ((eq response :accepted)
+                       ; (when *debug* (format t "~&[DEBUG] Response: 202 Accepted~%"))
+                       ; (format stream "HTTP/1.1 202 Accepted~c~cConnection: close~c~c~c~c"
+                               ; #\Return #\Linefeed
+                               ; #\Return #\Linefeed
+                               ; #\Return #\Linefeed)
+                       ; (finish-output stream)
+                       ; (force-output stream))
+
+                      ; (response
+                       ; (when *debug* (format t "~&[DEBUG] Response: ~a~%" response))
+                       ; (format stream "~a" (http-response response))
+                       ; (finish-output stream)
+                       ; (force-output stream))))
+                ; Close connection if client requested it
+                ; (let ((conn (cdr (assoc "CONNECTION" headers :test #'string=))))
+                  ; (when (and conn (string-equal (string-trim " " conn) "close"))
+                    ; (return)))))))
+        ; (error (e)
+          ; (when *debug* (format t "~&[DEBUG] Client error: ~a~%" e))
+          ; (format t "Client error: ~a~%" e)))
+      ; (when stream (close stream))))
+  ; (when *debug* (format t "~&[DEBUG] Client closed~%"))
+  ; (socket-close client-socket))
+
 (defun handle-client (client-socket)
   (when *debug* (format t "~&[DEBUG] New client~%"))
-  (let ((stream (socket-make-stream client-socket :input t :output t :element-type 'character :external-format :latin-1
-                :buffering :full)))
+  (let ((stream (socket-make-stream client-socket
+                                    :input t :output t
+                                    :element-type 'character
+                                    :external-format :latin-1
+                                    :buffering :full)))
     (unwind-protect
       (handler-case
         (loop
@@ -463,81 +560,134 @@
             (unless request-line (return))
             (multiple-value-bind (method path) (parse-request-line request-line)
               (when *debug* (format t "~&[DEBUG] Method: ~a Path: ~a~%" method path))
-              (let ((*request-id* "null")   ; ← dynamic rebind — thread-local
-              (headers '()) content-length body)
+              (let ((*request-id* "null")
+                    (headers '()) content-length body)
                 (when *debug* (format t "~&[DEBUG] Reading headers~%"))
                 (loop for line = (read-line stream nil nil)
                       do (when *debug* (format t "~&[DEBUG] Header line: ~s~%" line))
-                      while (and line (plusp (length (string-trim '(#\Space #\Tab #\Return #\Newline) line))))
+                      while (and line (plusp (length (string-trim
+                                                       '(#\Space #\Tab #\Return #\Newline) line))))
                       do (let* ((colon (position #\: line)))
                            (when colon
                              (let* ((header-name (string-upcase (subseq line 0 colon)))
                                     (header-value (string-trim " " (subseq line (1+ colon)))))
                                (push (cons header-name header-value) headers)
-                               (when *debug* (format t "~&[DEBUG] Header: ~a = ~a~%" header-name header-value))))))
+                               (when *debug*
+                                 (format t "~&[DEBUG] Header: ~a = ~a~%"
+                                         header-name header-value))))))
                 (let ((raw-len (let ((header (assoc "CONTENT-LENGTH" headers :test #'string=)))
                                  (if header
                                      (or (parse-integer (cdr header) :junk-allowed t) 0)
                                      0))))
                   (setf content-length (min raw-len 100000))
                   (when (> raw-len 100000)
-                    (when *debug* (format t "~&[DEBUG] Body too large: ~d > 100000, capping~%" raw-len))
+                    (when *debug*
+                      (format t "~&[DEBUG] Body too large: ~d > 100000, capping~%" raw-len))
                     (dotimes (_ (- raw-len 100000))
                       (read-char stream nil nil)))
-                  (when *debug* (format t "~&[DEBUG] Effective Content-Length: ~d~%" content-length)))
-                (setf body (when (plusp content-length)
-                             (let ((b (make-string content-length)))
-                               (let ((read-bytes (read-sequence b stream)))
-                                 (when (< read-bytes content-length)
-                                   (when *debug* (format t "~&[DEBUG] Partial read: ~d/~d~%" read-bytes content-length)))
-                                 b))))
+                  (when *debug*
+                    (format t "~&[DEBUG] Effective Content-Length: ~d~%" content-length)))
+                (setf body
+                      (when (plusp content-length)
+                        (let ((b (make-string content-length)))
+                          (let ((read-bytes (read-sequence b stream)))
+                            (when (< read-bytes content-length)
+                              (when *debug*
+                                (format t "~&[DEBUG] Partial read: ~d/~d~%"
+                                        read-bytes content-length))))
+                          b)))
                 (when *debug*
                   (format t "~&[DEBUG] Body: ~d bytes~%" (if body (length body) 0)))
                 (let ((response
-                       (cond ((and method (string= method "GET")  (string= path "/"))          (handle-root))
-                             ((and method (string= method "GET")  (string= path "/health"))    (handle-health))
-                             ((and method (string= method "POST") (string= path "/tool-call")) (handle-tool-call body))
-                             ;; FIXED — consistent with all other routes
-                             ((and method (string= method "POST") (string= path "/mcp"))
-                             (let ((mcp-response (handle-mcp body)))
-                               (if mcp-response
-                                   mcp-response
-                                   :accepted)))
+                        (cond
+                          ((and method (string= method "GET")  (string= path "/"))
+                           (handle-root))
+                          ((and method (string= method "GET")  (string= path "/health"))
+                           (handle-health))
+                          ((and method (string= method "GET")  (string= path "/mcp"))
+                           (handle-mcp-sse stream) :sse)
+                          ((and method (string= method "POST") (string= path "/tool-call"))
+                           (handle-tool-call body))
+                          ((and method (string= method "POST") (string= path "/mcp"))
+                           (let ((mcp-response (handle-mcp body)))
+                             (if mcp-response mcp-response :accepted)))
+                          ((and method (string= method "POST") (string= path "/load"))
+                           (handle-load body))
+                          ((and method (string= method "POST") (string= path "/functsource"))
+                           (handle-functsource body))
+                          ((and method (string= method "POST") (string= path "/help"))
+                           (handle-help body))
+                          ((and method (string= method "POST") (string= path "/listfunctions"))
+                           (handle-listfunctions))
+                          (t (json-object "error" "Not found")))))
+                  (cond
+                    ((eq response :sse)
+                     nil)   ; stream owned by handle-mcp-sse — do nothing
+                    ((eq response :accepted)
+                     (when *debug* (format t "~&[DEBUG] Response: 202 Accepted~%"))
+                     (handler-case
+                       (progn
+                         (format stream
+                           "HTTP/1.1 202 Accepted~c~cConnection: close~c~c~c~c"
+                           #\Return #\Linefeed
+                           #\Return #\Linefeed
+                           #\Return #\Linefeed)
+                         (finish-output stream)
+                         (force-output stream))
+                       (error (e)
+                         (when *debug*
+                           (format t "~&[DEBUG] Write error on 202: ~a~%" e)))))
+                    (response
+                     (when *debug* (format t "~&[DEBUG] Response: ~a~%" response))
+                     (handler-case
+                       (progn
+                         (format stream "~a" (http-response response))
+                         (finish-output stream)
+                         (force-output stream))
+                       (error (e)
+                         (when *debug*
+                           (format t "~&[DEBUG] Write error: ~a~%" e))))))
+                  ;; Close on Connection: close
+                  (let ((conn (cdr (assoc "CONNECTION" headers :test #'string=))))
+                    (when (and conn (string-equal (string-trim " " conn) "close"))
+                      (return))))))))
+        (serious-condition (e)       ; catches error + SBCL internal conditions
+          (when *debug*
+            (format t "~&[DEBUG] Client error: ~a~%" e))))
+      (when *debug* (format t "~&[DEBUG] Client closed~%"))
+      (ignore-errors (close stream))
+      (ignore-errors (socket-close client-socket)))))
 
-    
-                             ((and method (string= method "POST") (string= path "/load"))      (handle-load body))
-                             ((and method (string= method "POST") (string= path "/functsource")) (handle-functsource body))
-                             ((and method (string= method "POST") (string= path "/help")) (handle-help body))
-                             ((and method (string= method "POST") (string= path "/listfunctions")) (handle-listfunctions ))
-                             
-                             (t (json-object "error" "Not found")))))
-
-                    (cond
-                      ((eq response :accepted)
-                       (when *debug* (format t "~&[DEBUG] Response: 202 Accepted~%"))
-                       (format stream "HTTP/1.1 202 Accepted~c~cConnection: close~c~c~c~c"
-                               #\Return #\Linefeed
-                               #\Return #\Linefeed
-                               #\Return #\Linefeed)
-                       (finish-output stream)
-                       (force-output stream))
-
-                      (response
-                       (when *debug* (format t "~&[DEBUG] Response: ~a~%" response))
-                       (format stream "~a" (http-response response))
-                       (finish-output stream)
-                       (force-output stream))))
-                ;; Close connection if client requested it
-                (let ((conn (cdr (assoc "CONNECTION" headers :test #'string=))))
-                  (when (and conn (string-equal (string-trim " " conn) "close"))
-                    (return)))))))
-        (error (e)
-          (when *debug* (format t "~&[DEBUG] Client error: ~a~%" e))
-          (format t "Client error: ~a~%" e)))
-      (when stream (close stream))))
-  (when *debug* (format t "~&[DEBUG] Client closed~%"))
-  (socket-close client-socket))
-
+(defun handle-mcp-sse (stream)
+  (when *debug* (format t "~&[DEBUG] GET /mcp SSE~%"))
+  ;; Register stream for graceful shutdown
+  (sb-thread:with-mutex (*sse-lock*)
+    (push stream *sse-streams*))
+  (unwind-protect
+    (progn
+      (ignore-errors
+        (format stream
+          "HTTP/1.1 200 OK~c~cContent-Type: text/event-stream~c~cCache-Control: no-cache~c~cConnection: keep-alive~c~c~c~c"
+          #\Return #\Linefeed #\Return #\Linefeed
+          #\Return #\Linefeed #\Return #\Linefeed
+          #\Return #\Linefeed)
+        (force-output stream)
+        (format stream "event: endpoint~c~cdata: /mcp~c~c~c~c"
+          #\Return #\Linefeed #\Return #\Linefeed #\Return #\Linefeed)
+        (force-output stream))
+      ;; Heartbeat loop — exits when server stops or client disconnects
+      (loop while *server-running*
+        do (sleep 5)
+           (when (ignore-errors
+                   (format stream ": heartbeat~c~c" #\Return #\Linefeed)
+                   (force-output stream)
+                   t)
+             nil)  ; write succeeded — continue
+           (unless (ignore-errors (force-output stream) t)
+             (return))))  ; write failed — client gone, exit loop
+  ;; Deregister on exit
+  (sb-thread:with-mutex (*sse-lock*)
+    (setf *sse-streams* (remove stream *sse-streams*)))))
 
 (defun extract-json-id (body)
   "Extract JSON-RPC id from anywhere in the body.
@@ -688,7 +838,16 @@
 (defun stop-server ()
   (when *debug* (format t "~&[DEBUG] Stopping server~%"))
   (setf *server-running* nil)
-  (when *server-socket* (socket-close *server-socket*))
+  ;; Close all active SSE streams gracefully
+  (sb-thread:with-mutex (*sse-lock*)
+    (dolist (s *sse-streams*)
+      (ignore-errors (close s)))
+    (setf *sse-streams* '()))
+  ;; Close the listener socket
+  (when *server-socket*
+    (ignore-errors (socket-close *server-socket*))
+    (setf *server-socket* nil))
+  (when *debug* (format t "~&[DEBUG] Server stopped~%"))
   t)
 
 ;; Accessors 
