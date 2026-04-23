@@ -70,6 +70,20 @@
           (t       (json-string (princ-to-string value))))))
     (write-char #\} out)))
 
+
+(defun format-id (id)
+  "Emit JSON-RPC id correctly:
+   - numeric string → unquoted number  (e.g. 1)
+   - other string   → quoted string    (e.g. \"abc\")
+   - nil/null       → JSON null        (e.g. null)
+   Never emits Lisp string null — LM Studio rejects id:null from a string."
+  (cond
+    ((or (null id) (string= id "null")) "null")
+    ((every #'digit-char-p (string-trim " " id))
+     (string-trim " " id))
+    (t (format nil "\"~a\"" (json-escape id)))))
+    
+
 ;;; HTTP response helper
       
 (defun http-status-text (code)
@@ -158,9 +172,9 @@
                    (t cleaned)))
                (escaped (json-escape result)))
           (format nil "{\"jsonrpc\":\"2.0\",\"id\":~a,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"~a\"}]}}"
-                  (or id "null") escaped))
+                  (format-id id) escaped))
         (format nil "{\"jsonrpc\":\"2.0\",\"id\":~a,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"Error: no function name specified\"}]}}"
-                  (or id "null")))))
+                  (format-id id)))))
 
 ;;; Maxima help via the ? (describe) operator
 ;;; Captures *standard-output* during meval, exactly like get-maxima-error-message.
@@ -196,9 +210,9 @@
         (let* ((result  (run-maxima-describe (string-trim " " topic)))
                (escaped (json-escape result)))
           (format nil "{\"jsonrpc\":\"2.0\",\"id\":~a,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"~a\"}]}}"
-                  (or id "null") escaped))
+                  (format-id id) escaped))
         (format nil "{\"jsonrpc\":\"2.0\",\"id\":~a,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"Error: no topic specified\"}]}}"
-                (or id "null")))))
+                (format-id id)))))
                 
 (defun safe-expr-p (expr)
   (and (not (search ":lisp" expr :test #'char-equal))
@@ -213,7 +227,7 @@
            (result (clean-maxima-result raw))
            (escaped (json-escape result)))
       (format nil "{\"jsonrpc\":\"2.0\",\"id\":~a,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"~a\"}]}}"
-              (or id "null") escaped))))
+              (format-id id) escaped))))
 
 
 (defun normalize-maxima-error (msg)
@@ -372,12 +386,12 @@
                (escaped (json-escape result)))
           (when *debug* (format t "~&[DEBUG] tool result: ~a~%" result))
           (format nil "{\"jsonrpc\":\"2.0\",\"id\":~a,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"~a\"}]}}"
-                  (or id "null") escaped))
+                  (format-id id) escaped))
 
         (progn
           (when *debug* (format t "~&[DEBUG] tool error: no expression~%"))
           (format nil "{\"jsonrpc\":\"2.0\",\"id\":~a,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"Error: no expression\"}]}}"
-                  (or id "null"))))))
+                  (format-id id))))))
 
 
 ;; Package loader
@@ -526,44 +540,40 @@
 
 
 (defun extract-json-id (body)
-  "Extract top-level JSON-RPC id. Handles both quoted keys (proper JSON)
-   and unquoted keys (Windows curl shell-stripping artefact)."
-  (let* ((search-end (or (search "\"params\"" body)
-                         (search "params:" body)
-                         (search "\"method\"" body)
-                         (search "method:" body)
-                         (length body))))
-    ;; Case 1: quoted key  {"id":1}  or  {"id":"val"}
-    (let* ((qkey   "\"id\":")
-           (kstart (search qkey body :end2 search-end)))
-      (when kstart
-        (let* ((after (+ kstart (length qkey)))
-               (end1  (position #\, body :start after :end search-end))
-               (end2  (position #\} body :start after :end search-end))
-               (end   (cond ((and end1 end2) (min end1 end2))
-                            (end1 end1)
-                            (end2 end2))))
-          (when end
-            (return-from extract-json-id
-              (string-trim " \"" (subseq body after end)))))))
-    ;; Case 2: unquoted key  {id:1}  (Windows curl / shell-stripped JSON)
-    (let* ((ukey   "id:")
-           (kstart (search ukey body :end2 search-end)))
-      (when kstart
-        (let* ((after (+ kstart (length ukey)))
-               (end1  (position #\, body :start after :end search-end))
-               (end2  (position #\} body :start after :end search-end))
-               (end   (cond ((and end1 end2) (min end1 end2))
-                            (end1 end1)
-                            (end2 end2))))
-          (when end
-            (string-trim " \"" (subseq body after end))))))))
+  "Extract JSON-RPC id from anywhere in the body.
+   Returns the id as a string, or nil if not found."
+  (when (null body) (return-from extract-json-id nil))
+  ;; Case 1: quoted key {"id":...}
+  (let* ((qkey "\"id\":")
+         (kstart (search qkey body)))
+    (when kstart
+      (let* ((after (+ kstart (length qkey)))
+             (end1  (position #\, body :start after))
+             (end2  (position #\} body :start after))
+             (end   (cond ((and end1 end2) (min end1 end2))
+                          (end1 end1)
+                          (end2 end2))))
+        (when end
+          (return-from extract-json-id
+            (string-trim " \"" (subseq body after end)))))))
+  ;; Case 2: unquoted key {id:...} (Windows curl)
+  (let* ((ukey "id:")
+         (kstart (search ukey body)))
+    (when kstart
+      (let* ((after (+ kstart (length ukey)))
+             (end1  (position #\, body :start after))
+             (end2  (position #\} body :start after))
+             (end   (cond ((and end1 end2) (min end1 end2))
+                          (end1 end1)
+                          (end2 end2))))
+        (when end
+          (string-trim " \"" (subseq body after end)))))))
 
 (defun handle-mcp (body)
   (when *debug* (format t "~&[DEBUG] /mcp body: ~a~%" body))
   (let ((method (extract-json-field body "method"))
         (id     (extract-json-id body)))
-    (setf *request-id* (or id "null"))    ; ← writes into the thread-local binding
+    (setf *request-id* (format-id id))    ; ← writes into the thread-local binding
     (cond
       ;; Notifications — no response needed
       ((search "notifications/" method)
@@ -589,7 +599,7 @@
               (if package-name
                   (handle-load (format nil "{\"package\":\"~a\"}" package-name) id)
                   (format nil "{\"jsonrpc\":\"2.0\",\"id\":~a,\"error\":{\"code\":-32602,\"message\":\"Missing package name\"}}"
-                          (or id "null")))))
+                          (format-id id)))))
 
            ;; maxima_functsource
            ((or (search "functsource" tool-name)
@@ -607,7 +617,7 @@
            ;; unknown tool
            (t
             (format nil "{\"jsonrpc\":\"2.0\",\"id\":~a,\"error\":{\"code\":-32601,\"message\":\"Unknown tool: ~a\"}}"
-                    (or id "null") tool-name)))))
+                    (format-id id) tool-name)))))
 
       ;; Standard MCP methods
       (t
@@ -641,7 +651,7 @@
 
                  (t (json-object "error" "Unknown method")))))
          (format nil "{\"jsonrpc\":\"2.0\",\"id\":~a,\"result\":~a}"
-                 (or id "null") result))))))
+                 (format-id id) result))))))
 
          
 ;;; Server loop
