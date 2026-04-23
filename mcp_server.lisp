@@ -525,19 +525,6 @@
   (socket-close client-socket))
 
 
-; (defun extract-json-id (body)
-  ; (let* ((key "\"id\":"))
-    ; (let ((kstart (search key body)))
-      ; (when kstart
-        ; (let* ((after (+ kstart (length key)))
-               ; (end1 (position #\, body :start after))
-               ; (end2 (position #\} body :start after))
-               ; (end (cond ((and end1 end2) (min end1 end2))
-                          ; (end1 end1)
-                          ; (end2 end2))))
-          ; (when end
-            ; (string-trim " " (subseq body after end))))))))
-
 (defun extract-json-id (body)
   "Extract top-level JSON-RPC id. Handles both quoted keys (proper JSON)
    and unquoted keys (Windows curl shell-stripping artefact)."
