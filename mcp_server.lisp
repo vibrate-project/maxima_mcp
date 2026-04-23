@@ -3,19 +3,21 @@
 ;; Works in vanilla Maxima SBCL.
 
 ;; (C) 2026 Dimiter Prodanov, IICT
-;; help from Deepseek and Calude 
-;; version 1
+;; help from Deepseek and Calude LLMs
+;; version 1.2
 
 (in-package :cl-user)
 (require :sb-bsd-sockets)
 
 (defpackage :maxima-mcp
   (:use :cl :sb-bsd-sockets)
-  (:export :start-server :stop-server :server-running-p :server-port :*server-running* :*debug* ))
+  (:export :start-server :stop-server :server-running-p :server-port :*server-running* :*debug*  ))
 
 (in-package :maxima-mcp)
 (defparameter *debug* t)
 (defparameter *local* t)
+(defparameter *version* "1.2")
+
 (format t "~&[DEBUG] === maxima-mcp-server.lisp loading ===~%")
 
 ;;; Configuration
@@ -198,6 +200,15 @@
        (not (search "quit(" expr :test #'char-equal))))                  
 
 
+;;; List all user-defined Maxima functions (values of the `functions` variable)
+(defun handle-listfunctions (body)
+  (when *debug* (format t "~&[DEBUG] handle-listfunctions~%"))
+  (let ((id (extract-json-id body)))
+    (let* ((raw    (run-maxima "functions"))
+           (result (clean-maxima-result raw))
+           (escaped (json-escape result)))
+      (format nil "{\"jsonrpc\":\"2.0\",\"id\":~a,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"~a\"}]}}"
+              (or id "null") escaped))))
 
 
 (defun normalize-maxima-error (msg)
@@ -341,8 +352,7 @@
 
 (defun handle-root ()
   (when *debug* (format t "~&[DEBUG] /~%"))
-  (json-object "message" "Maxima MCP Server" "endpoints" (list "/health" "/tool-call" "/load" "/mcp" "/help" "/functsource")))
-
+  (json-object "message" "Maxima MCP Server" "endpoints" (list "/health" "/tool-call" "/load" "/mcp" "/help" "/functsource" "/listfunctions")))
 
 
 
@@ -480,6 +490,8 @@
                              ((and method (string= method "POST") (string= path "/load"))      (handle-load body))
                              ((and method (string= method "POST") (string= path "/functsource")) (handle-functsource body))
                              ((and method (string= method "POST") (string= path "/help")) (handle-help body))
+                             ((and method (string= method "POST") (string= path "/listfunctions")) (handle-listfunctions body))
+                             
                              (t (json-object "error" "Not found")))))
 
                     (cond
@@ -509,20 +521,52 @@
   (socket-close client-socket))
 
 
+; (defun extract-json-id (body)
+  ; (let* ((key "\"id\":"))
+    ; (let ((kstart (search key body)))
+      ; (when kstart
+        ; (let* ((after (+ kstart (length key)))
+               ; (end1 (position #\, body :start after))
+               ; (end2 (position #\} body :start after))
+               ; (end (cond ((and end1 end2) (min end1 end2))
+                          ; (end1 end1)
+                          ; (end2 end2))))
+          ; (when end
+            ; (string-trim " " (subseq body after end))))))))
+
 (defun extract-json-id (body)
-  (let* ((key "\"id\":"))
-    (let ((kstart (search key body)))
+  "Extract top-level JSON-RPC id. Handles both quoted keys (proper JSON)
+   and unquoted keys (Windows curl shell-stripping artefact)."
+  (let* ((search-end (or (search "\"params\"" body)
+                         (search "params:" body)
+                         (search "\"method\"" body)
+                         (search "method:" body)
+                         (length body))))
+    ;; Case 1: quoted key  {"id":1}  or  {"id":"val"}
+    (let* ((qkey   "\"id\":")
+           (kstart (search qkey body :end2 search-end)))
       (when kstart
-        (let* ((after (+ kstart (length key)))
-               (end1 (position #\, body :start after))
-               (end2 (position #\} body :start after))
-               (end (cond ((and end1 end2) (min end1 end2))
-                          (end1 end1)
-                          (end2 end2))))
+        (let* ((after (+ kstart (length qkey)))
+               (end1  (position #\, body :start after :end search-end))
+               (end2  (position #\} body :start after :end search-end))
+               (end   (cond ((and end1 end2) (min end1 end2))
+                            (end1 end1)
+                            (end2 end2))))
           (when end
-            (string-trim " " (subseq body after end))))))))
-
-
+            (return-from extract-json-id
+              (string-trim " \"" (subseq body after end)))))))
+    ;; Case 2: unquoted key  {id:1}  (Windows curl / shell-stripped JSON)
+    (let* ((ukey   "id:")
+           (kstart (search ukey body :end2 search-end)))
+      (when kstart
+        (let* ((after (+ kstart (length ukey)))
+               (end1  (position #\, body :start after :end search-end))
+               (end2  (position #\} body :start after :end search-end))
+               (end   (cond ((and end1 end2) (min end1 end2))
+                            (end1 end1)
+                            (end2 end2))))
+          (when end
+            (string-trim " \"" (subseq body after end))))))))
 
 (defun handle-mcp (body)
   (when *debug* (format t "~&[DEBUG] /mcp body: ~a~%" body))
@@ -563,6 +607,11 @@
           ((or (search "help" tool-name)
                (search "maxima_help" tool-name))
            (handle-help body))
+          ;; maxima_listfunctions
+          ((or (search "listfunctions" tool-name)
+               (search "maxima_listfunctions" tool-name))
+           (handle-listfunctions body))        
+           
            ;; unknown tool
            (t
             (format nil "{\"jsonrpc\":\"2.0\",\"id\":~a,\"error\":{\"code\":-32601,\"message\":\"Unknown tool: ~a\"}}"
@@ -589,7 +638,10 @@
                       \"inputSchema\":{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"}},\"required\":[\"name\"]}},
                      {\"name\":\"maxima_help\",
                      \"description\":\"Get documentation for a Maxima function or topic (equivalent to ? topic in Maxima)\",
-                     \"inputSchema\":{\"type\":\"object\",\"properties\":{\"topic\":{\"type\":\"string\"}},\"required\":[\"topic\"]}}
+                     \"inputSchema\":{\"type\":\"object\",\"properties\":{\"topic\":{\"type\":\"string\"}},\"required\":[\"topic\"]}},
+                     {\"name\":\"maxima_listfunctions\",
+                      \"description\":\"Return the list of all user-defined Maxima functions (value of the `functions` variable)\",
+                      \"inputSchema\":{\"type\":\"object\",\"properties\":{}}}
                   ]}")
 
                  ((search "ping" method)
@@ -614,8 +666,8 @@
   (unwind-protect
     (loop while *server-running* do
       (let ((client (ignore-errors (socket-accept *server-socket*))))
-        (unless client (sleep 0.05))   ; <-- add this
-        (when (and client *server-running*)   ; <-- both guards
+        (unless client (sleep 0.05))   
+        (when (and client *server-running*)   
           (when *debug* (format t "~&[DEBUG] Accepted client~%"))
           (sb-thread:make-thread
             (lambda () (handle-client client)) :name "client"))))
@@ -641,3 +693,5 @@
 (defun debug-enabled-p () *debug*)
 (defun server-running-p () *server-running*)
 (defun server-port () *port*)
+
+(defun server-version () *version*)
