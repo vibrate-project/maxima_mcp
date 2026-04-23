@@ -155,29 +155,50 @@
         (format nil "{\"jsonrpc\":\"2.0\",\"id\":~a,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"Error: no function name specified\"}]}}"
                   (or id "null")))))
 
+;;; Maxima help via the ? (describe) operator
+;;; Captures *standard-output* during meval, exactly like get-maxima-error-message.
+(defun run-maxima-describe (topic)
+  "Call Maxima's describe function for TOPIC and return the printed output.
+   Topic is interned directly as a Maxima symbol — avoids mread wrapping
+   it in a nodisplayinput(false, ...) display form."
+  (when *debug* (format t "~&[DEBUG] run-maxima-describe: ~a~%" topic))
+  (handler-case
+    (let* ((sym (intern (string-upcase (string-trim " " topic)) :maxima))
+           (raw
+            (with-output-to-string (out)
+              (let ((*standard-output* out)
+                    (maxima::$display2d nil))
+                (maxima::meval
+                  (list '(maxima::$describe) sym))))))
+      (let ((msg (string-trim '(#\Space #\Newline #\Return #\Tab) raw)))
+        (if (plusp (length msg))
+            msg
+            (format nil "No documentation found for: ~a" topic))))
+    (error (e)
+      (when *debug* (format t "~&[DEBUG] describe error: ~a~%" e))
+      (format nil "Error fetching help for ~a: ~a" topic e))))
+
+(defun handle-help (body)
+  (when *debug* (format t "~&[DEBUG] handle-help: ~a~%" body))
+  (let* ((topic (or (extract-tool-argument body "topic")
+                    (extract-json-field body "topic")
+                    ""))
+         (id (extract-json-id body)))
+    (when *debug* (format t "~&[DEBUG] help topic: ~a id: ~a~%" topic id))
+    (if (plusp (length (string-trim " " topic)))
+        (let* ((result  (run-maxima-describe (string-trim " " topic)))
+               (escaped (json-escape result)))
+          (format nil "{\"jsonrpc\":\"2.0\",\"id\":~a,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"~a\"}]}}"
+                  (or id "null") escaped))
+        (format nil "{\"jsonrpc\":\"2.0\",\"id\":~a,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"Error: no topic specified\"}]}}"
+                (or id "null")))))
+                
 (defun safe-expr-p (expr)
   (and (not (search ":lisp" expr :test #'char-equal))
        (not (search "quit(" expr :test #'char-equal))))                  
 
 
-; (defun run-maxima (expr)
-  ; (when *debug* (format t "~&[DEBUG] Maxima expr: ~a~%" expr))
-  ; (let* ((trimmed (string-trim '(#\Space #\Newline #\Return #\Tab #\; #\$) expr)))
-    ; (unless (safe-expr-p trimmed)
-      ; (when *debug* (format t "~&[DEBUG] Blocked expr: ~a~%" trimmed))
-      ; (return-from run-maxima "Error: expression blocked by security policy"))
-    ; (let ((input (format nil "~a$" trimmed)))
-      ; (when *debug* (format t "~&[DEBUG] Input to mread: ~a~%" input))
-      ; (handler-case
-          ; (with-input-from-string (in input)
-            ; (let* ((maxima::$display2d nil)
-                   ; (evaled (maxima::meval (maxima::mread in)))
-                   ; (result (with-output-to-string (out)
-                             ; (maxima::mgrind evaled out))))
-              ; (string-trim '(#\Space #\Newline #\Return #\Tab) result)))
-        ; (error (e)
-          ; (when *debug* (format t "~&[DEBUG] Maxima error: ~a~%" e))
-          ; (format nil "Maxima error: ~a" e))))))
+
 
 (defun normalize-maxima-error (msg)
   (let ((s (string-trim '(#\Space #\Newline #\Return #\Tab)
@@ -320,7 +341,7 @@
 
 (defun handle-root ()
   (when *debug* (format t "~&[DEBUG] /~%"))
-  (json-object "message" "Maxima MCP Server" "endpoints" (list "/health" "/tool-call" "/load" "/mcp")))
+  (json-object "message" "Maxima MCP Server" "endpoints" (list "/health" "/tool-call" "/load" "/mcp" "/help" "/functsource")))
 
 
 
@@ -458,6 +479,7 @@
     
                              ((and method (string= method "POST") (string= path "/load"))      (handle-load body))
                              ((and method (string= method "POST") (string= path "/functsource")) (handle-functsource body))
+                             ((and method (string= method "POST") (string= path "/help")) (handle-help body))
                              (t (json-object "error" "Not found")))))
 
                     (cond
@@ -537,7 +559,10 @@
            ((or (search "functsource" tool-name)
                 (search "maxima_functsource" tool-name))
             (handle-functsource body))
-
+          ;; maxima_help
+          ((or (search "help" tool-name)
+               (search "maxima_help" tool-name))
+           (handle-help body))
            ;; unknown tool
            (t
             (format nil "{\"jsonrpc\":\"2.0\",\"id\":~a,\"error\":{\"code\":-32601,\"message\":\"Unknown tool: ~a\"}}"
@@ -561,7 +586,10 @@
                       \"inputSchema\":{\"type\":\"object\",\"properties\":{\"package\":{\"type\":\"string\"}},\"required\":[\"package\"]}},
                      {\"name\":\"maxima_functsource\",
                       \"description\":\"Get the source definition of a Maxima user function\",
-                      \"inputSchema\":{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"}},\"required\":[\"name\"]}}
+                      \"inputSchema\":{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"}},\"required\":[\"name\"]}},
+                     {\"name\":\"maxima_help\",
+                     \"description\":\"Get documentation for a Maxima function or topic (equivalent to ? topic in Maxima)\",
+                     \"inputSchema\":{\"type\":\"object\",\"properties\":{\"topic\":{\"type\":\"string\"}},\"required\":[\"topic\"]}}
                   ]}")
 
                  ((search "ping" method)
