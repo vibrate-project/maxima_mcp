@@ -15,6 +15,7 @@
 
 (in-package :maxima-mcp)
 (defparameter *debug* t)
+(defparameter *local* t)
 (format t "~&[DEBUG] === maxima-mcp-server.lisp loading ===~%")
 
 ;;; Configuration
@@ -576,7 +577,9 @@
   (when *debug* (format t "~&[DEBUG] Setting up listener on port ~d~%" *port*))
   (setf *server-socket* (make-instance 'inet-socket :type :stream :protocol :tcp))
   (setf (sockopt-reuse-address *server-socket*) t)
-  (socket-bind *server-socket* #(127 0 0 1) *port*)
+  (if *local*
+    (socket-bind *server-socket* #(127 0 0 1) *port*)
+    (socket-bind *server-socket* #(0 0 0 0) *port*))
   (socket-listen *server-socket* 5)
   (format t "*** Maxima MCP on ~d ***~%" *port*)
   (when *debug* (format t "~&[DEBUG] Server loop started~%"))
