@@ -3,8 +3,8 @@
 ;; Works in vanilla Maxima SBCL.
 
 ;; (C) 2026 Dimiter Prodanov, IICT
-;; help from Deepseek and Calude LLMs
-;; version 1.2
+;; help from Deepseek, Calude, Gemma 4 LLMs
+;; version 1.2.2
 
 (in-package :cl-user)
 (require :sb-bsd-sockets)
@@ -20,6 +20,10 @@
 
 (defvar *request-id* "null"
   "Current JSON-RPC request id. Dynamically rebound per client thread in handle-client.")
+  
+  
+(defvar *last-question* nil)
+
 
 (defvar  *sse-streams* '()
   "List of active SSE streams — closed gracefully by stop-server.")
@@ -51,6 +55,7 @@
                ((= code 13)  (write-string "\\r"  out))  ; U+000D carriage return
                ((< code 32)  (format out "\\u~4,'0x" code)) ; other control chars
                ((= code 127) (write-string "\\u007f" out))  ; U+007F DEL
+               ((> code 255) (format out "\\u~4,'0x" code)) 
                (t            (write-char ch out))))))
                
 (defun json-string (s) (format nil "\"~a\"" (json-escape s)))
@@ -75,12 +80,19 @@
     (write-char #\} out)))
 
 
-(defun format-id (id)
-  "Emit JSON-RPC id correctly:
-   - numeric string → unquoted number  (e.g. 1)
-   - other string   → quoted string    (e.g. \"abc\")
-   - nil/null       → JSON null        (e.g. null)
-   Never emits Lisp string null — LM Studio rejects id:null from a string."
+; (defun format-id (id)
+  ; "Emit JSON-RPC id correctly:
+   ; - numeric string → unquoted number  (e.g. 1)
+   ; - other string   → quoted string    (e.g. \"abc\")
+   ; - nil/null       → JSON null        (e.g. null)
+   ; Never emits Lisp string null — LM Studio rejects id:null from a string."
+  ; (cond
+    ; ((or (null id) (string= id "null")) "null")
+    ; ((every #'digit-char-p (string-trim " " id))
+     ; (string-trim " " id))
+    ; (t (format nil "\"~a\"" (json-escape id)))))
+  
+  (defun format-id (id)
   (cond
     ((or (null id) (string= id "null")) "null")
     ((every #'digit-char-p (string-trim " " id))
@@ -180,6 +192,37 @@
         (format nil "{\"jsonrpc\":\"2.0\",\"id\":~a,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"Error: no function name specified\"}]}}"
                   (format-id id)))))
 
+                
+; correct                 
+(defun run-maxima (expr)
+  (when *debug* (format t "~&[DEBUG] Maxima expr: ~a~%" expr))
+  (let* ((trimmed
+           (string-trim '(#\Space #\Newline #\Return #\Tab #\; #\$) expr)))
+    (unless (safe-expr-p trimmed)
+      (when *debug* (format t "~&[DEBUG] Blocked expr: ~a~%" trimmed))
+      (return-from run-maxima "Error: expression blocked by security policy"))
+    (let ((input (format nil "~a$" trimmed)))
+      (when *debug* (format t "~&[DEBUG] Input to mread: ~a~%" input))
+      (handler-case
+          (with-input-from-string (in input)
+            (let* ((maxima::$display2d nil)
+                   (evaled (maxima::meval (maxima::mread in)))
+                   (result (with-output-to-string (out)
+                             (maxima::mgrind evaled out))))
+              (string-trim '(#\Space #\Newline #\Return #\Tab) result)))
+        (error (e)
+          (if (typep e 'mcp-question-interrupted)
+              "mcpquestion"
+              (let ((maxima-msg (get-maxima-error-message)))
+                (when *debug*
+                  (format t "~&[DEBUG] Lisp error: ~a~%" e)
+                  (format t "~&[DEBUG] Maxima msg: ~a~%" maxima-msg))
+                (if (and maxima-msg (> (length maxima-msg) 0))
+                    maxima-msg
+                    (normalize-maxima-error e)))))))))
+
+
+
 ;;; Maxima help via the ? (describe) operator
 ;;; Captures *standard-output* during meval, exactly like get-maxima-error-message.
 (defun run-maxima-describe (topic)
@@ -202,7 +245,7 @@
     (error (e)
       (when *debug* (format t "~&[DEBUG] describe error: ~a~%" e))
       (format nil "Error fetching help for ~a: ~a" topic e))))
-
+                
 (defun handle-help (body)
   (when *debug* (format t "~&[DEBUG] handle-help: ~a~%" body))
   (let* ((topic (or (extract-tool-argument body "topic")
@@ -232,6 +275,32 @@
            (escaped (json-escape result)))
       (format nil "{\"jsonrpc\":\"2.0\",\"id\":~a,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"~a\"}]}}"
               (format-id id) escaped))))
+
+(defun handle-batch (body)
+  (when *debug* (format t "~&[DEBUG] /batch body: ~a~%" body))
+  (let* ((id      *request-id*)
+         (raw-str (or (extract-tool-argument body "expressions")
+             (extract-json-field     body "expressions")))
+         (exprs   (when raw-str
+                    (remove-if (lambda (s) (zerop (length (string-trim " " s))))
+                               (split-on-semicolon raw-str))))
+         (results '()))
+    (if (null exprs)
+      (format nil "{\"jsonrpc\":\"2.0\",\"id\":~a,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"Error: no expressions provided\"}]}}"
+              (format-id id))
+      (progn
+        (dolist (expr exprs)
+          (let* ((trimmed (string-trim " " expr))
+                 (raw     (run-maxima trimmed))
+                 (result  (clean-maxima-result raw)))
+            (push (format nil "~a => ~a" trimmed result) results)
+            (when (and (>= (length result) 5)
+                       (string= (subseq result 0 5) "Error"))
+              (return))))
+        (let* ( (joined (format nil "~{~a~^~%~}" (reverse results)))
+               (escaped (json-escape joined)))
+          (format nil "{\"jsonrpc\":\"2.0\",\"id\":~a,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"~a\"}]}}"
+                  (format-id id) escaped))))))
 
 
 (defun normalize-maxima-error (msg)
@@ -263,30 +332,32 @@
     (error ()
       nil)))
       
-(defun run-maxima (expr)
-  (when *debug* (format t "~&[DEBUG] Maxima expr: ~a~%" expr))
-  (let* ((trimmed (string-trim '(#\Space #\Newline #\Return #\Tab #\; #\$) expr)))
-    (unless (safe-expr-p trimmed)
-      (when *debug* (format t "~&[DEBUG] Blocked expr: ~a~%" trimmed))
-      (return-from run-maxima "Error: expression blocked by security policy"))
-    (let ((input (format nil "~a$" trimmed)))
-      (when *debug* (format t "~&[DEBUG] Input to mread: ~a~%" input))
-      (handler-case
-          (with-input-from-string (in input)
-            (let* ((maxima::$display2d nil)
-                   (evaled (maxima::meval (maxima::mread in)))
-                   (result (with-output-to-string (out)
-                             (maxima::mgrind evaled out))))
-              (string-trim '(#\Space #\Newline #\Return #\Tab) result)))
-        (error (e)
-          (let ((maxima-msg (get-maxima-error-message)))
-            (when *debug*
-              (format t "~&[DEBUG] Lisp error: ~a~%" e)
-              (format t "~&[DEBUG] Maxima msg: ~a~%" maxima-msg))
-            (if (and maxima-msg (> (length maxima-msg) 0))
-                maxima-msg
-                (normalize-maxima-error e))))))))
+; (defun run-maxima (expr)
+  ; (when *debug* (format t "~&[DEBUG] Maxima expr: ~a~%" expr))
+  ; (let* ((trimmed (string-trim '(#\Space #\Newline #\Return #\Tab #\; #\$) expr)))
+    ; (unless (safe-expr-p trimmed)
+      ; (when *debug* (format t "~&[DEBUG] Blocked expr: ~a~%" trimmed))
+      ; (return-from run-maxima "Error: expression blocked by security policy"))
+    ; (let ((input (format nil "~a$" trimmed)))
+      ; (when *debug* (format t "~&[DEBUG] Input to mread: ~a~%" input))
+      ; (handler-case
+          ; (with-input-from-string (in input)
+            ; (let* ((maxima::$display2d nil)
+                   ; (evaled (maxima::meval (maxima::mread in)))
+                   ; (result (with-output-to-string (out)
+                             ; (maxima::mgrind evaled out))))
+              ; (string-trim '(#\Space #\Newline #\Return #\Tab) result)))
+        ; (error (e)
+          ; (let ((maxima-msg (get-maxima-error-message)))
+            ; (when *debug*
+              ; (format t "~&[DEBUG] Lisp error: ~a~%" e)
+              ; (format t "~&[DEBUG] Maxima msg: ~a~%" maxima-msg))
+            ; (if (and maxima-msg (> (length maxima-msg) 0))
+                ; maxima-msg
+                ; (normalize-maxima-error e))))))))
 
+
+ 
  
 (defun get-maxima-error-message ()
   (handler-case
@@ -315,6 +386,7 @@
   ;; Case 1: quoted key + quoted value  {"field":"value"}
   (let* ((qkey (format nil "\"~a\":\"" field-name))
          (qstart (search qkey body)))
+           (format t "~&[DEBUG] qkey=~s qstart=~a body=~s~%" qkey qstart body)
     (when qstart
       (let* ((after (+ qstart (length qkey)))
              (qend (position #\" body :start after)))
@@ -366,6 +438,18 @@
     pos))  ; end of string if nothing found
 
 
+(defun split-on-semicolon (s)
+  "Split string S on semicolons, returning a list of substrings."
+  (let ((results '())
+        (start 0))
+    (loop for i from 0 below (length s)
+          when (char= (char s i) #\;)
+          do (push (subseq s start i) results)
+             (setf start (1+ i)))
+    (push (subseq s start) results)
+    (nreverse results)))
+
+
 ;;; HTTP handlers
 (defun handle-health ()
   (when *debug* (format t "~&[DEBUG] /health~%"))
@@ -373,31 +457,74 @@
 
 (defun handle-root ()
   (when *debug* (format t "~&[DEBUG] /~%"))
-  (json-object "message" "Maxima MCP Server" "endpoints" (list "/health" "/tool-call" "/load" "/mcp" "/help" "/functsource" "/listfunctions")))
+  (json-object "message" "Maxima MCP Server" "endpoints" (list "/health" "/tool-call" "/load" "/mcp" "/help" "/functsource" "/listfunctions" "/batch" )))
 
 
-
+                
+                
+; (defun handle-tool-call (body)
+  ; (when *debug* (format t "~&[DEBUG] handle-tool-call: ~a~%" body))
+  ; (let* ((tool-name     (extract-json-field body "name"))
+         ; (expr          (extract-json-field body "expression"))
+         ; (id            *request-id*)
+        ; )
+    ; (if (and expr (plusp (length (string-trim " " expr))))
+        ; (let* ((clean-expr (string-trim " " expr))
+               ; (raw        (run-maxima clean-expr)))
+          ; (when *debug* (format t "~&[DEBUG] raw from run-maxima: ~a~%" raw))
+          ; (if (string= raw "__mcp_question__")
+              ; Send question + original expression back to client
+              ; (format nil
+                      ; "{\"jsonrpc\":\"2.0\",\"id\":~a,\"result\":{\
+; \"question\":\"~a\",\
+; \"expression\":\"~a\"}}"
+                      ; (format-id id)
+                      ; (json-escape (or *last-question* ""))
+                      ; (json-escape clean-expr))
+              ; Normal result path
+              ; (let* ((result  (clean-maxima-result raw))
+                     ; (escaped (json-escape result)))
+                ; (when *debug* (format t "~&[DEBUG] tool result: ~a~%" result))
+                ; (format nil
+                        ; "{\"jsonrpc\":\"2.0\",\"id\":~a,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"~a\"}]}}"
+                        ; (format-id id) escaped))))
+        ; (progn
+          ; (when *debug* (format t "~&[DEBUG] tool error: no expression~%"))
+          ; (format nil
+                  ; "{\"jsonrpc\":\"2.0\",\"id\":~a,\"error\":{\"code\":-32602,\"message\":\"Error: no expression\"}}"
+                  ; (format-id id))))))
+                          
+                  
+                  
 (defun handle-tool-call (body)
   (when *debug* (format t "~&[DEBUG] handle-tool-call: ~a~%" body))
   (let* ((tool-name (extract-json-field body "name"))
-         (expr (extract-json-field body "expression"))
-         (id *request-id* ))
-    (when *debug* (format t "~&[DEBUG] tool: ~a expr: ~a id: ~a~%" tool-name expr id))
+         (expr      (extract-json-field body "expression"))
+         (id        *request-id*))
     (if (and expr (plusp (length (string-trim " " expr))))
         (let* ((clean-expr (string-trim " " expr))
-               (raw (run-maxima clean-expr))
-               (result (clean-maxima-result raw))
-               (escaped (json-escape result)))
-          (when *debug* (format t "~&[DEBUG] tool result: ~a~%" result))
-          (format nil "{\"jsonrpc\":\"2.0\",\"id\":~a,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"~a\"}]}}"
-                  (format-id id) escaped))
+               (raw        (run-maxima clean-expr)))
+          (when *debug* (format t "~&[DEBUG] raw from run-maxima: ~a~%" raw))
+          (if (string= raw "mcpquestion")
+              ;; FIXED PATH: Move "question" key to "result" key
+              (format nil
+                      "{\"jsonrpc\":\"2.0\",\"id\":~a,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"MAXIMA_INPUT_REQUIRED: ~a\"}]}}"
+                      (format-id id)
+                      (json-escape (or *last-question* "")))
+              ;; NORMAL PATH:
+              (let* ((result  (clean-maxima-result raw))
+                     (escaped (json-escape result)))
+                (when *debug* (format t "~&[DEBUG] tool result: ~a~%" result))
+                (format nil
+                        "{\"jsonrpc\":\"2.0\",\"id\":~a,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"~a\"}]}}"
+                        (format-id id) escaped))))
+        (format nil
+                "{\"jsonrpc\":\"2.0\",\"id\":~a,\"error\":{\"code\":-32602,\"message\":\"Error: no expression\"}}"
+                (format-id id)))))
+                  
 
-        (progn
-          (when *debug* (format t "~&[DEBUG] tool error: no expression~%"))
-          (format nil "{\"jsonrpc\":\"2.0\",\"id\":~a,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"Error: no expression\"}]}}"
-                  (format-id id))))))
-
-
+                  
+                  
 ;; Package loader
 (defun handle-load (body &optional id)
   (when *debug* (format t "~&[DEBUG] /load body: ~a id: ~a~%" body id))
@@ -619,6 +746,8 @@
                            (handle-help body))
                           ((and method (string= method "POST") (string= path "/listfunctions"))
                            (handle-listfunctions))
+                          ((and method (string= method "POST") (string= path "/batch"))       
+                           (handle-batch body))   
                           (t (json-object "error" "Not found")))))
                   (cond
                     ((eq response :sse)
@@ -763,7 +892,11 @@
           ((or (search "listfunctions" tool-name)
                (search "maxima_listfunctions" tool-name))
            (handle-listfunctions ))        
-           
+          ;; maxima_batch  
+           ((or (search "batch" tool-name)
+                (search "maxima_batch" tool-name))
+            (handle-batch body))
+      
            ;; unknown tool
            (t
             (format nil "{\"jsonrpc\":\"2.0\",\"id\":~a,\"error\":{\"code\":-32601,\"message\":\"Unknown tool: ~a\"}}"
@@ -849,6 +982,95 @@
     (setf *server-socket* nil))
   (when *debug* (format t "~&[DEBUG] Server stopped~%"))
   t)
+
+(defun parse-callback-url (url)
+  "Parse http://host:port/path into (values host port path)."
+  (let* ((no-scheme (if (search "://" url)
+                        (subseq url (+ 3 (search "://" url)))
+                        url))
+         (slash     (position #\/ no-scheme))
+         (host-port (if slash (subseq no-scheme 0 slash) no-scheme))
+         (path      (if slash (subseq no-scheme slash) "/"))
+         (colon     (position #\: host-port))
+         (host      (if colon (subseq host-port 0 colon) host-port))
+         (port      (if colon (parse-integer (subseq host-port (1+ colon))) 80)))
+    (values host port path)))
+
+(defun http-post-json (host port path json-body)
+  (let ((socket (make-instance 'sb-bsd-sockets:inet-socket
+                               :type :stream :protocol :tcp)))
+    (sb-bsd-sockets:socket-connect
+     socket (sb-bsd-sockets:host-ent-address
+             (sb-bsd-sockets:get-host-by-name host))
+     port)
+    (let ((stream (sb-bsd-sockets:socket-make-stream
+                   socket :input t :output t :element-type 'character
+                          :external-format :latin-1)))
+      (unwind-protect
+           (progn
+             (format stream "POST ~a HTTP/1.1~c~cHost: ~a~c~cContent-Type: application/json~c~cContent-Length: ~d~c~cConnection: close~c~c~a"
+                     path #\Return #\Linefeed host #\Return #\Linefeed
+                     #\Return #\Linefeed (length json-body) #\Return #\Linefeed
+                     #\Return #\Linefeed json-body)
+             (force-output stream)
+             ;; skip headers
+             (loop for line = (read-line stream nil nil)
+                   while (and line (plusp (length (string-trim '(#\Return) line)))))
+             ;; read body
+             (with-output-to-string (out)
+               (loop for line = (read-line stream nil nil)
+                     while line do (write-string line out))))
+        (ignore-errors (close stream))
+        (ignore-errors (sb-bsd-sockets:socket-close socket))))))
+
+ 
+;(defvar *last-question* nil)
+
+; (defun mcp-retrieve (msg type &optional dummy)
+  ; (declare (ignore type dummy))
+  ; (let ((qtext (with-output-to-string (out)
+                 ; (let ((*standard-output* out))
+                   ; (maxima::displa msg)))))
+    ; (setf *last-question* qtext)
+    ; (when *debug* (format t "~&[DEBUG] mcp-retrieve question: ~a~%" qtext))
+    ; "__mcp_question__"))
+
+;; Maxima interactive-input bridge
+(define-condition mcp-question-interrupted (error)
+  ((question :initarg :question
+             :reader mcp-question-interrupted-question))
+  (:report
+   (lambda (condition stream)
+     (format stream "Maxima requires input: ~a"
+             (mcp-question-interrupted-question condition)))))
+
+(defvar *last-question* nil)
+
+(defun mcp-retrieve (msg type &optional dummy)
+  (declare (ignore type dummy))
+  (let ((qtext (with-output-to-string (out)
+                 (let ((maxima::$display2d nil))
+                   (maxima::mgrind msg out)))))
+    (setf *last-question* qtext)
+    (when *debug*
+      (format t "~&[DEBUG] mcp-retrieve question: ~a~%" qtext))
+    (error 'mcp-question-interrupted)))
+
+(setf (symbol-function 'maxima::retrieve) #'mcp-retrieve)
+
+
+
+; (defun mcp-retrieve (msg type &optional dummy)
+  ; (declare (ignore type dummy))
+  ; (let ((qtext (with-output-to-string (out)
+                 ; (let ((*standard-output* out))
+                   ; (maxima::displa msg)))))
+    ; (setf *last-question* qtext)
+    ; (when *debug* (format t "~&[DEBUG] mcp-retrieve question: ~a~%" qtext))
+    ; Signal the error to immediately exit the meval stack
+    ; (error 'mcp-question-interrupted)))
+    
+; (setf (symbol-function 'maxima::retrieve) #'mcp-retrieve)
 
 ;; Accessors 
 (defun debug-enabled-p () *debug*)
