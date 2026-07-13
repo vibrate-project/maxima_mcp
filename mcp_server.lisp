@@ -3,7 +3,7 @@
 ;; Works in vanilla Maxima SBCL.
 
 ;; (C) 2026 Dimiter Prodanov, IICT
-;; help from Deepseek, Calude, Gemma 4 LLMs
+;; help from Deepseek, Calude, Gemma, GPT LLMs
 ;; version 1.2.2
 
 (in-package :cl-user)
@@ -21,9 +21,18 @@
 (defvar *request-id* "null"
   "Current JSON-RPC request id. Dynamically rebound per client thread in handle-client.")
   
-  
 (defvar *last-question* nil)
 
+(defstruct maxima-context
+  name
+  parent)
+
+(defvar *maxima-contexts* (make-hash-table :test #'equal))
+(defvar *maxima-context-lock*
+  (sb-thread:make-mutex :name "maxima-contexts"))
+(defvar *maxima-eval-lock*
+  (sb-thread:make-mutex :name "maxima-evaluation"))
+  
 
 (defvar  *sse-streams* '()
   "List of active SSE streams — closed gracefully by stop-server.")
@@ -192,8 +201,23 @@
         (format nil "{\"jsonrpc\":\"2.0\",\"id\":~a,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"Error: no function name specified\"}]}}"
                   (format-id id)))))
 
-                
-; correct                 
+(defun valid-context-name-p (name)
+  (and (stringp name)
+       (> (length name) 0)
+       (every (lambda (ch)
+                (or (alphanumericp ch) (char= ch #\_)))
+              name)))
+
+(defun run-maxima-in-context (expr context)
+  (if (or (null context) (zerop (length (string-trim " " context))))
+      (run-maxima expr)
+      (if (valid-context-name-p context)
+          (run-maxima
+           (format nil "block([context:'~a], ~a)" context expr))
+          "Error: invalid context name")))
+          
+          
+;; Running Maxima                              
 (defun run-maxima (expr)
   (when *debug* (format t "~&[DEBUG] Maxima expr: ~a~%" expr))
   (let* ((trimmed
@@ -332,31 +356,6 @@
     (error ()
       nil)))
       
-; (defun run-maxima (expr)
-  ; (when *debug* (format t "~&[DEBUG] Maxima expr: ~a~%" expr))
-  ; (let* ((trimmed (string-trim '(#\Space #\Newline #\Return #\Tab #\; #\$) expr)))
-    ; (unless (safe-expr-p trimmed)
-      ; (when *debug* (format t "~&[DEBUG] Blocked expr: ~a~%" trimmed))
-      ; (return-from run-maxima "Error: expression blocked by security policy"))
-    ; (let ((input (format nil "~a$" trimmed)))
-      ; (when *debug* (format t "~&[DEBUG] Input to mread: ~a~%" input))
-      ; (handler-case
-          ; (with-input-from-string (in input)
-            ; (let* ((maxima::$display2d nil)
-                   ; (evaled (maxima::meval (maxima::mread in)))
-                   ; (result (with-output-to-string (out)
-                             ; (maxima::mgrind evaled out))))
-              ; (string-trim '(#\Space #\Newline #\Return #\Tab) result)))
-        ; (error (e)
-          ; (let ((maxima-msg (get-maxima-error-message)))
-            ; (when *debug*
-              ; (format t "~&[DEBUG] Lisp error: ~a~%" e)
-              ; (format t "~&[DEBUG] Maxima msg: ~a~%" maxima-msg))
-            ; (if (and maxima-msg (> (length maxima-msg) 0))
-                ; maxima-msg
-                ; (normalize-maxima-error e))))))))
-
-
  
  
 (defun get-maxima-error-message ()
@@ -460,69 +459,63 @@
   (json-object "message" "Maxima MCP Server" "endpoints" (list "/health" "/tool-call" "/load" "/mcp" "/help" "/functsource" "/listfunctions" "/batch" )))
 
 
-                
-                
+                  
 ; (defun handle-tool-call (body)
   ; (when *debug* (format t "~&[DEBUG] handle-tool-call: ~a~%" body))
-  ; (let* ((tool-name     (extract-json-field body "name"))
-         ; (expr          (extract-json-field body "expression"))
-         ; (id            *request-id*)
-        ; )
+  ; (let* ((tool-name (extract-json-field body "name"))
+         ; (expr      (extract-json-field body "expression"))
+         ; (id        *request-id*))
     ; (if (and expr (plusp (length (string-trim " " expr))))
         ; (let* ((clean-expr (string-trim " " expr))
                ; (raw        (run-maxima clean-expr)))
           ; (when *debug* (format t "~&[DEBUG] raw from run-maxima: ~a~%" raw))
-          ; (if (string= raw "__mcp_question__")
-              ; Send question + original expression back to client
+          ; (if (string= raw "mcpquestion")
+              ; FIXED PATH: Move "question" key to "result" key
               ; (format nil
-                      ; "{\"jsonrpc\":\"2.0\",\"id\":~a,\"result\":{\
-; \"question\":\"~a\",\
-; \"expression\":\"~a\"}}"
+                      ; "{\"jsonrpc\":\"2.0\",\"id\":~a,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"Ask user: ~a\"}]}}"
                       ; (format-id id)
-                      ; (json-escape (or *last-question* ""))
-                      ; (json-escape clean-expr))
-              ; Normal result path
+                      ; (json-escape (or *last-question* "")))
+              ; NORMAL PATH:
               ; (let* ((result  (clean-maxima-result raw))
                      ; (escaped (json-escape result)))
                 ; (when *debug* (format t "~&[DEBUG] tool result: ~a~%" result))
                 ; (format nil
                         ; "{\"jsonrpc\":\"2.0\",\"id\":~a,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"~a\"}]}}"
                         ; (format-id id) escaped))))
-        ; (progn
-          ; (when *debug* (format t "~&[DEBUG] tool error: no expression~%"))
-          ; (format nil
-                  ; "{\"jsonrpc\":\"2.0\",\"id\":~a,\"error\":{\"code\":-32602,\"message\":\"Error: no expression\"}}"
-                  ; (format-id id))))))
-                          
-                  
+        ; (format nil
+                ; "{\"jsonrpc\":\"2.0\",\"id\":~a,\"error\":{\"code\":-32602,\"message\":\"Error: no expression\"}}"
+                ; (format-id id)))))
                   
 (defun handle-tool-call (body)
   (when *debug* (format t "~&[DEBUG] handle-tool-call: ~a~%" body))
   (let* ((tool-name (extract-json-field body "name"))
-         (expr      (extract-json-field body "expression"))
+         (expr      (or (extract-tool-argument body "expression")
+                        (extract-json-field body "expression")))
+         (context   (or (extract-tool-argument body "context")
+                        (extract-json-field body "context")))
          (id        *request-id*))
+    (declare (ignore tool-name))
     (if (and expr (plusp (length (string-trim " " expr))))
         (let* ((clean-expr (string-trim " " expr))
-               (raw        (run-maxima clean-expr)))
-          (when *debug* (format t "~&[DEBUG] raw from run-maxima: ~a~%" raw))
+               (raw        (run-maxima-in-context clean-expr context)))
+          (when *debug*
+            (format t "~&[DEBUG] context: ~a~%" context)
+            (format t "~&[DEBUG] raw from run-maxima: ~a~%" raw))
           (if (string= raw "mcpquestion")
-              ;; FIXED PATH: Move "question" key to "result" key
               (format nil
-                      "{\"jsonrpc\":\"2.0\",\"id\":~a,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"MAXIMA_INPUT_REQUIRED: ~a\"}]}}"
+                      "{\"jsonrpc\":\"2.0\",\"id\":~a,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"Ask user: ~a\"}]}}"
                       (format-id id)
                       (json-escape (or *last-question* "")))
-              ;; NORMAL PATH:
               (let* ((result  (clean-maxima-result raw))
                      (escaped (json-escape result)))
-                (when *debug* (format t "~&[DEBUG] tool result: ~a~%" result))
+                (when *debug*
+                  (format t "~&[DEBUG] tool result: ~a~%" result))
                 (format nil
                         "{\"jsonrpc\":\"2.0\",\"id\":~a,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"~a\"}]}}"
                         (format-id id) escaped))))
         (format nil
                 "{\"jsonrpc\":\"2.0\",\"id\":~a,\"error\":{\"code\":-32602,\"message\":\"Error: no expression\"}}"
                 (format-id id)))))
-                  
-
                   
                   
 ;; Package loader
@@ -583,96 +576,6 @@
               (subseq line (1+ space1) space2)))))
 
 ;;; Client handling
-; (defun handle-client (client-socket)
-  ; (when *debug* (format t "~&[DEBUG] New client~%"))
-  ; (let ((stream (socket-make-stream client-socket :input t :output t :element-type 'character :external-format :latin-1
-                ; :buffering :full)))
-    ; (unwind-protect
-      ; (handler-case
-        ; (loop
-          ; (let ((request-line (read-line stream nil nil)))
-            ; (unless request-line (return))
-            ; (multiple-value-bind (method path) (parse-request-line request-line)
-              ; (when *debug* (format t "~&[DEBUG] Method: ~a Path: ~a~%" method path))
-              ; (let ((*request-id* "null")   ; ← dynamic rebind — thread-local
-              ; (headers '()) content-length body)
-                ; (when *debug* (format t "~&[DEBUG] Reading headers~%"))
-                ; (loop for line = (read-line stream nil nil)
-                      ; do (when *debug* (format t "~&[DEBUG] Header line: ~s~%" line))
-                      ; while (and line (plusp (length (string-trim '(#\Space #\Tab #\Return #\Newline) line))))
-                      ; do (let* ((colon (position #\: line)))
-                           ; (when colon
-                             ; (let* ((header-name (string-upcase (subseq line 0 colon)))
-                                    ; (header-value (string-trim " " (subseq line (1+ colon)))))
-                               ; (push (cons header-name header-value) headers)
-                               ; (when *debug* (format t "~&[DEBUG] Header: ~a = ~a~%" header-name header-value))))))
-                ; (let ((raw-len (let ((header (assoc "CONTENT-LENGTH" headers :test #'string=)))
-                                 ; (if header
-                                     ; (or (parse-integer (cdr header) :junk-allowed t) 0)
-                                     ; 0))))
-                  ; (setf content-length (min raw-len 100000))
-                  ; (when (> raw-len 100000)
-                    ; (when *debug* (format t "~&[DEBUG] Body too large: ~d > 100000, capping~%" raw-len))
-                    ; (dotimes (_ (- raw-len 100000))
-                      ; (read-char stream nil nil)))
-                  ; (when *debug* (format t "~&[DEBUG] Effective Content-Length: ~d~%" content-length)))
-                ; (setf body (when (plusp content-length)
-                             ; (let ((b (make-string content-length)))
-                               ; (let ((read-bytes (read-sequence b stream)))
-                                 ; (when (< read-bytes content-length)
-                                   ; (when *debug* (format t "~&[DEBUG] Partial read: ~d/~d~%" read-bytes content-length)))
-                                 ; b))))
-                ; (when *debug*
-                  ; (format t "~&[DEBUG] Body: ~d bytes~%" (if body (length body) 0)))
-                ; (let ((response
-                       ; (cond ((and method (string= method "GET")  (string= path "/"))          (handle-root))
-                             ; ((and method (string= method "GET")  (string= path "/health"))    (handle-health))
-                             ; ((and method (string= method "GET") (string= path "/mcp"))
-                               ; (handle-mcp-sse stream)
-                               ; :sse)
-                             ; ((and method (string= method "POST") (string= path "/tool-call")) (handle-tool-call body))
-                             ; FIXED — consistent with all other routes
-                             ; ((and method (string= method "POST") (string= path "/mcp"))
-                             ; (let ((mcp-response (handle-mcp body)))
-                               ; (if mcp-response
-                                   ; mcp-response
-                                   ; :accepted)))
-
-    
-                             ; ((and method (string= method "POST") (string= path "/load"))      (handle-load body))
-                             ; ((and method (string= method "POST") (string= path "/functsource")) (handle-functsource body))
-                             ; ((and method (string= method "POST") (string= path "/help")) (handle-help body))
-                             ; ((and method (string= method "POST") (string= path "/listfunctions")) (handle-listfunctions ))
-                             
-                             ; (t (json-object "error" "Not found")))))
-
-                    ; (cond
-                      ; ((eq response :sse)      nil)           ; ← ADD this — stream owned by handle-mcp-sse
-                      ; ((eq response :accepted)
-                       ; (when *debug* (format t "~&[DEBUG] Response: 202 Accepted~%"))
-                       ; (format stream "HTTP/1.1 202 Accepted~c~cConnection: close~c~c~c~c"
-                               ; #\Return #\Linefeed
-                               ; #\Return #\Linefeed
-                               ; #\Return #\Linefeed)
-                       ; (finish-output stream)
-                       ; (force-output stream))
-
-                      ; (response
-                       ; (when *debug* (format t "~&[DEBUG] Response: ~a~%" response))
-                       ; (format stream "~a" (http-response response))
-                       ; (finish-output stream)
-                       ; (force-output stream))))
-                ; Close connection if client requested it
-                ; (let ((conn (cdr (assoc "CONNECTION" headers :test #'string=))))
-                  ; (when (and conn (string-equal (string-trim " " conn) "close"))
-                    ; (return)))))))
-        ; (error (e)
-          ; (when *debug* (format t "~&[DEBUG] Client error: ~a~%" e))
-          ; (format t "Client error: ~a~%" e)))
-      ; (when stream (close stream))))
-  ; (when *debug* (format t "~&[DEBUG] Client closed~%"))
-  ; (socket-close client-socket))
-
 (defun handle-client (client-socket)
   (when *debug* (format t "~&[DEBUG] New client~%"))
   (let ((stream (socket-make-stream client-socket
@@ -818,6 +721,7 @@
   (sb-thread:with-mutex (*sse-lock*)
     (setf *sse-streams* (remove stream *sse-streams*)))))
 
+
 (defun extract-json-id (body)
   "Extract JSON-RPC id from anywhere in the body.
    Returns the id as a string, or nil if not found."
@@ -847,6 +751,9 @@
                           (end2 end2))))
         (when end
           (string-trim " \"" (subseq body after end)))))))
+
+
+                
 
 (defun handle-mcp (body)
   (when *debug* (format t "~&[DEBUG] /mcp body: ~a~%" body))
@@ -906,11 +813,12 @@
       (t
        (let ((result
                (cond
-                  ((search "initialize" method)
-                   "{\"protocolVersion\":\"2025-06-18\",\
-                  \"serverInfo\":{\"name\":\"maxima-mcp\",\"version\":\"1.0\"},\
-                  \"capabilities\":{\"tools\":{\"listChanged\":false}}}")
-                 ((search "tools/list" method)
+                  ; ((search "initialize" method)
+                   ; "{\"protocolVersion\":\"2025-11-25\",\
+                  ; \"serverInfo\":{\"name\":\"maxima-mcp\",\"version\":\"1.0\"},\
+                  ; \"capabilities\":{\"tools\":{\"listChanged\":false}}}")
+                    ((search "initialize" method)                 "{\"protocolVersion\":\"2025-06-18\",\"serverInfo\":{\"name\":\"maxima-mcp\",\"version\":\"1.2\"},\"capabilities\":{\"tools\":{\"listChanged\":false}},\"instructions\":\"For multi-step symbolic work requiring persistent assumptions or facts, first create a context and pass its context ID to every related maxima_compute call. Omit context for independent calculations. Destroy the context when finished. If a tool result begins with 'Ask user', do not send a bare interactive reply. For questions about variable properties or signs, add the required fact using a Maxima expression such as assume(t > 0), assume(t < 0), or assume(t = 0) in the same context, then retry the original expression using that context. Only add an assumption when justified by the user request; otherwise ask the user.\"}")
+                   ((search "tools/list" method)
                   "{\"tools\":[
                      {\"name\":\"maxima_compute\",
                       \"description\":\"Evaluate a Maxima CAS expression\",
@@ -944,7 +852,7 @@
   (setf (sockopt-reuse-address *server-socket*) t)
   (if *local*
     (socket-bind *server-socket* #(127 0 0 1) *port*)
-    (socket-bind *server-socket* #(0 0 0 0) *port*))
+    (socket-bind *server-socket* #(0   0 0 0) *port*))
   (socket-listen *server-socket* 5)
   (format t "*** Maxima MCP on ~d ***~%" *port*)
   (when *debug* (format t "~&[DEBUG] Server loop started~%"))
@@ -1024,16 +932,6 @@
         (ignore-errors (sb-bsd-sockets:socket-close socket))))))
 
  
-;(defvar *last-question* nil)
-
-; (defun mcp-retrieve (msg type &optional dummy)
-  ; (declare (ignore type dummy))
-  ; (let ((qtext (with-output-to-string (out)
-                 ; (let ((*standard-output* out))
-                   ; (maxima::displa msg)))))
-    ; (setf *last-question* qtext)
-    ; (when *debug* (format t "~&[DEBUG] mcp-retrieve question: ~a~%" qtext))
-    ; "__mcp_question__"))
 
 ;; Maxima interactive-input bridge
 (define-condition mcp-question-interrupted (error)
@@ -1072,6 +970,46 @@
     
 ; (setf (symbol-function 'maxima::retrieve) #'mcp-retrieve)
 
+
+(defun kill-maxima-context (ctx-id)
+  (let ((ctx (gethash ctx-id *maxima-contexts*)))
+    (unless ctx
+      (return-from kill-maxima-context
+        "Error: unknown or expired context"))
+    (sb-thread:with-mutex (*maxima-eval-lock*)
+      (run-maxima
+       (format nil "killcontext(~a)"
+               (maxima-context-name ctx))))
+    (sb-thread:with-mutex (*maxima-context-lock*)
+      (remhash ctx-id *maxima-contexts*))
+    "Context closed"))
+
+
+;;; test function for contexts 
+(defun test-maxima-context ()
+  (let ((ctx (clean-maxima-result
+              (run-maxima "supcontext()"))))
+    (unwind-protect
+         (progn
+           (format t "~&[TEST] context: ~a~%" ctx)
+
+           ;; Add a fact to this context.
+           (format t "~&[TEST] assume: ~a~%"
+                   (run-maxima
+                    (format nil
+                            "block([context:'~a], assume(t > 0))"
+                            ctx)))
+
+           ;; A separate request-like computation sees the fact.
+           (format t "~&[TEST] integral: ~a~%"
+                   (clean-maxima-result
+                    (run-maxima
+                     (format nil
+                             "block([context:'~a], integrate(sin(x),x,0,t))"
+                             ctx)))))
+      ;; ctx is not active outside either block.
+      (run-maxima (format nil "killcontext(~a)" ctx)))))
+    
 ;; Accessors 
 (defun debug-enabled-p () *debug*)
 (defun server-running-p () *server-running*)
