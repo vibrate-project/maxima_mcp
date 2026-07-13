@@ -4,7 +4,7 @@
 
 ;; (C) 2026 Dimiter Prodanov, IICT
 ;; help from Deepseek, Calude, Gemma, GPT LLMs
-;; version 1.2.2
+;; version 1.2.3
 
 (in-package :cl-user)
 (require :sb-bsd-sockets)
@@ -813,16 +813,18 @@
       (t
        (let ((result
                (cond
-                  ; ((search "initialize" method)
-                   ; "{\"protocolVersion\":\"2025-11-25\",\
-                  ; \"serverInfo\":{\"name\":\"maxima-mcp\",\"version\":\"1.0\"},\
-                  ; \"capabilities\":{\"tools\":{\"listChanged\":false}}}")
                     ((search "initialize" method)                 "{\"protocolVersion\":\"2025-06-18\",\"serverInfo\":{\"name\":\"maxima-mcp\",\"version\":\"1.2\"},\"capabilities\":{\"tools\":{\"listChanged\":false}},\"instructions\":\"For multi-step symbolic work requiring persistent assumptions or facts, first create a context and pass its context ID to every related maxima_compute call. Omit context for independent calculations. Destroy the context when finished. If a tool result begins with 'Ask user', do not send a bare interactive reply. For questions about variable properties or signs, add the required fact using a Maxima expression such as assume(t > 0), assume(t < 0), or assume(t = 0) in the same context, then retry the original expression using that context. Only add an assumption when justified by the user request; otherwise ask the user.\"}")
                    ((search "tools/list" method)
                   "{\"tools\":[
                      {\"name\":\"maxima_compute\",
                       \"description\":\"Evaluate a Maxima CAS expression\",
                       \"inputSchema\":{\"type\":\"object\",\"properties\":{\"expression\":{\"type\":\"string\"}},\"required\":[\"expression\"]}},
+                    {\"name\":\"maxima_batch\",
+                      \"description\":\"Evaluate multiple Maxima expressions sequentially. The expressions argument is a semicolon-separated sequence. Use this tool when one expression must establish an assumption or definition used by a later expression; for example: assume(T > 0); integrate(sin(x), x, 0, T).\",\
+                      \"inputSchema\":{\"type\":\"object\",\
+                    \"properties\":{\"expressions\":{\"type\":\"string\",\
+                    \"description\":\"Semicolon-separated Maxima expressions, executed left to right.\"}},\
+                    \"required\":[\"expressions\"]}},
                      {\"name\":\"maxima_load\",
                       \"description\":\"Load a Maxima package\",
                       \"inputSchema\":{\"type\":\"object\",\"properties\":{\"package\":{\"type\":\"string\"}},\"required\":[\"package\"]}},
